@@ -1,8 +1,0 @@
-{
-  "node_id": "node-a",
-  "cell_id": "cell-0-0",
-  "timestamp": "2026-11-21T10:00:01Z",
-  "state": "moderate",
-  "congestion_pct": 55,
-  "confidence": 0.8
-}
