@@ -1,0 +1,14 @@
+{
+  "schema_version": "0.1.0",
+  "node_id": "node-a",
+  "seq": 42,
+  "interval_start": "2026-11-20T10:00:00.000Z",
+  "interval_end": "2026-11-20T10:00:10.000Z",
+  "source": "synthetic",
+  "lanes": [
+    { "lane_id": "lane-1", "vehicle_count": 4, "flow_rate_vph": 1440.0, "avg_occupancy": 0.35,
+      "counts_by_class": { "emergency": 0, "public": 1, "private": 3 } },
+    { "lane_id": "lane-2", "vehicle_count": 2, "flow_rate_vph": 720.0, "avg_occupancy": 0.12,
+      "counts_by_class": { "emergency": 0, "public": 0, "private": 2 } }
+  ]
+}
