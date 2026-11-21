@@ -1,0 +1,32 @@
+name: Validate contracts
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install jsonschema
+      - name: Validate examples against schemas
+        run: |
+          python - <<'PY'
+          import glob, json, os, sys
+          from jsonschema import validate
+          failed = False
+          for schema_path in sorted(glob.glob("contracts/*_schema.json")):
+              name = os.path.basename(schema_path).replace("_schema.json", "")
+              example_path = f"contracts/examples/{name}.example.json"
+              if not os.path.exists(example_path):
+                  print(f"MISSING example for {schema_path}"); failed = True; continue
+              try:
+                  validate(json.load(open(example_path)), json.load(open(schema_path)))
+                  print(f"OK   {example_path}")
+              except Exception as e:
+                  print(f"FAIL {example_path}: {e}"); failed = True
+          sys.exit(1 if failed else 0)
+          PY

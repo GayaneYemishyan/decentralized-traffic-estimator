@@ -1,0 +1,9 @@
+{
+  "node_id": "node-a",
+  "cell_id": "cell-0-0",
+  "timestamp": "2026-11-21T10:00:00Z",
+  "interval_s": 1,
+  "vehicle_count": 12,
+  "density": 0.35,
+  "avg_speed_kmh": 42.5
+}

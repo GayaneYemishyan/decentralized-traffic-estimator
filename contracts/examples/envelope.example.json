@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "msg_id": "7d0c6a52-0000-4000-8000-000000000001",
+  "sender_id": "node-a",
+  "timestamp": "2026-11-21T10:00:01Z",
+  "type": "state",
+  "payload": {
+    "node_id": "node-a",
+    "cell_id": "cell-0-0",
+    "timestamp": "2026-11-21T10:00:01Z",
+    "state": "moderate",
+    "congestion_pct": 55,
+    "confidence": 0.8
+  }
+}
