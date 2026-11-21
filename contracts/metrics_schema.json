@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Metrics (P1 CV -> P2 inference)",
+  "type": "object",
+  "required": ["node_id", "cell_id", "timestamp", "interval_s", "vehicle_count", "density"],
+  "properties": {
+    "node_id": {"type": "string"},
+    "cell_id": {"type": "string"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "interval_s": {"type": "number", "exclusiveMinimum": 0},
+    "vehicle_count": {"type": "integer", "minimum": 0},
+    "density": {"type": "number", "minimum": 0, "maximum": 1},
+    "avg_speed_kmh": {"type": "number", "minimum": 0}
+  },
+  "additionalProperties": false
+}
