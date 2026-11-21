@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"log"
@@ -12,10 +13,31 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+func loadOrCreateKey(path string) (crypto.PrivKey, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return crypto.UnmarshalPrivateKey(data)
+	}
+	if !os.IsNotExist(err) {
+		return nil, err
+	}
+	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	data, err = crypto.MarshalPrivateKey(priv)
+	if err != nil {
+		return nil, err
+	}
+	return priv, os.WriteFile(path, data, 0600)
+}
+
 func main() {
+	keyPath := flag.String("key", "", "identity key file (empty = random identity each run)")
 	port := flag.Int("port", 4001, "TCP listen port")
 	bootstrap := flag.String("bootstrap", "", "multiaddr of a bootstrap peer")
 	topic := flag.String("topic", "traffic-state", "pub/sub topic")
@@ -24,7 +46,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	h, err := libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", *port)))
+	opts := []libp2p.Option{libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", *port))}
+	if *keyPath != "" {
+		priv, err := loadOrCreateKey(*keyPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		opts = append(opts, libp2p.Identity(priv))
+	}
+	h, err := libp2p.New(opts...)
 	if err != nil {
 		log.Fatal(err)
 	}
