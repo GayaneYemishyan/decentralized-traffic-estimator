@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -26,6 +26,20 @@ def load_schema(schema_name: str, contracts_dir: Optional[Path] = None) -> Dict[
         return json.load(handle)
 
 
+def _resolve_ref(ref: str, root_schema: Dict[str, Any]) -> Dict[str, Any]:
+    if not ref.startswith("#/"):
+        raise SchemaValidationError(f"Unsupported $ref target: {ref!r}")
+    current: Any = root_schema
+    for part in ref[2:].split("/"):
+        unescaped = part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(current, dict) or unescaped not in current:
+            raise SchemaValidationError(f"Unresolvable $ref target: {ref!r}")
+        current = current[unescaped]
+    if not isinstance(current, dict):
+        raise SchemaValidationError(f"Resolved $ref is not an object: {ref!r}")
+    return current
+
+
 def _check_type(value: Any, expected: str) -> bool:
     if expected == "object":
         return isinstance(value, dict)
@@ -44,7 +58,20 @@ def _check_type(value: Any, expected: str) -> bool:
     return True
 
 
-def _validate_node(value: Any, schema: Dict[str, Any], path: str, errors: List[str]) -> None:
+def _validate_node(
+    value: Any,
+    schema: Dict[str, Any],
+    root_schema: Dict[str, Any],
+    path: str,
+    errors: List[str],
+) -> None:
+    if "$ref" in schema:
+        target = _resolve_ref(schema["$ref"], root_schema)
+        merged = {k: v for k, v in schema.items() if k != "$ref"}
+        effective = {**target, **merged}
+        _validate_node(value, effective, root_schema, path, errors)
+        return
+
     if "const" in schema and value != schema["const"]:
         errors.append(f"{path}: expected const {schema['const']!r}, got {value!r}")
         return
@@ -88,7 +115,7 @@ def _validate_node(value: Any, schema: Dict[str, Any], path: str, errors: List[s
         item_schema = schema.get("items")
         if isinstance(item_schema, dict):
             for idx, item in enumerate(value):
-                _validate_node(item, item_schema, f"{path}[{idx}]", errors)
+                _validate_node(item, item_schema, root_schema, f"{path}[{idx}]", errors)
 
     if isinstance(value, dict):
         required = schema.get("required", [])
@@ -105,7 +132,13 @@ def _validate_node(value: Any, schema: Dict[str, Any], path: str, errors: List[s
 
         for key, prop_schema in properties.items():
             if key in value and isinstance(prop_schema, dict):
-                _validate_node(value[key], prop_schema, f"{path}.{key}", errors)
+                _validate_node(value[key], prop_schema, root_schema, f"{path}.{key}", errors)
+
+    if "if" in schema and isinstance(schema["if"], dict):
+        if_errors: List[str] = []
+        _validate_node(value, schema["if"], root_schema, path, if_errors)
+        if not if_errors and "then" in schema and isinstance(schema["then"], dict):
+            _validate_node(value, schema["then"], root_schema, path, errors)
 
 
 def validate_payload(
@@ -120,13 +153,14 @@ def validate_payload(
         import jsonschema  # type: ignore
     except ImportError:
         errors: List[str] = []
-        _validate_node(payload, schema, "$", errors)
+        _validate_node(payload, schema, schema, "$", errors)
         if errors:
             raise SchemaValidationError(f"Invalid {schema_name}: " + "; ".join(errors))
         return
 
     validator_cls = jsonschema.validators.validator_for(schema)
-    validator = validator_cls(schema)
+    format_checker = getattr(validator_cls, "FORMAT_CHECKER", None)
+    validator = validator_cls(schema, format_checker=format_checker)
     validation_errors = sorted(validator.iter_errors(payload), key=lambda err: list(err.path))
     if validation_errors:
         formatted = "; ".join(
@@ -138,6 +172,23 @@ def validate_payload(
 
 def validate_metrics_payload(payload: Dict[str, Any], contracts_dir: Optional[Path] = None) -> None:
     validate_payload(payload, "metrics_schema.json", contracts_dir=contracts_dir)
+    lanes = payload.get("lanes")
+    if isinstance(lanes, list):
+        mismatches: List[str] = []
+        for idx, lane in enumerate(lanes):
+            if isinstance(lane, dict):
+                counts = lane.get("counts_by_class")
+                vehicle_count = lane.get("vehicle_count")
+                if isinstance(counts, dict) and isinstance(vehicle_count, int) and not isinstance(vehicle_count, bool):
+                    expected_sum = sum(
+                        v for v in counts.values() if isinstance(v, int) and not isinstance(v, bool)
+                    )
+                    if vehicle_count != expected_sum:
+                        mismatches.append(
+                            f"$.lanes[{idx}].vehicle_count ({vehicle_count}) != sum(counts_by_class) ({expected_sum})"
+                        )
+        if mismatches:
+            raise SchemaValidationError("Invalid metrics_schema.json: " + "; ".join(mismatches))
 
 
 def validate_state_payload(payload: Dict[str, Any], contracts_dir: Optional[Path] = None) -> None:
