@@ -1,4 +1,6 @@
 *.exe
 *.test
 *.out
+*.key__pycache__/
+*.pyc
 *.key
