@@ -154,3 +154,38 @@ class Ledger:
         self.close()
 
  
+
+
+    # ---- writes
+    def append(
+        self,
+        entry_type: str,
+        payload: Mapping[str, Any],
+        *,
+        origin_node_id: str,
+        message_id: str | None = None,
+    ) -> LedgerEntry:
+        """Append one entry and return it.
+
+        ``state`` entries are validated against the state contract, must have
+        ``payload.node_id == origin_node_id`` and may carry the envelope's
+        ``message_id`` for duplicate suppression. ``action`` entries are
+        internal records (free-form payload) and must not carry a message_id.
+        """
+        if entry_type not in ENTRY_TYPES:
+            raise LedgerError(f"unknown entry_type {entry_type!r}; expected one of {ENTRY_TYPES}")
+        if not origin_node_id:
+            raise LedgerError("origin_node_id must be non-empty")
+        if entry_type == "state":
+            try:
+                validate_state(payload)
+            except ContractError as exc:
+                raise LedgerError(f"refusing to record invalid state: {exc}") from exc
+            if payload["node_id"] != origin_node_id:
+                raise LedgerError("state.node_id does not match origin_node_id")
+        elif message_id is not None:
+            raise LedgerError("action entries must not carry a message_id")
+        try:
+            payload_text = canonical_json(payload).decode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise LedgerError(f"payload is not serializable as strict JSON: {exc}") from exc
