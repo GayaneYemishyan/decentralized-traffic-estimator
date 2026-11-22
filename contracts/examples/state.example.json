@@ -1,0 +1,11 @@
+{
+  "schema_version": "0.1.0",
+  "node_id": "node-a",
+  "seq": 42,
+  "timestamp": "2026-11-20T10:00:10.250Z",
+  "state": "moderate",
+  "congestion_score": 0.55,
+  "confidence": 0.8,
+  "scope": "local",
+  "contributing_peers": []
+}
