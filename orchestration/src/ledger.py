@@ -192,7 +192,7 @@ class Ledger:
 
 
 
-             ts = utc_now_iso(self._clock() if self._clock else None)
+        ts = utc_now_iso(self._clock() if self._clock else None)
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -223,3 +223,101 @@ class Ledger:
                 raise LedgerError(f"ledger write failed: {exc}") from exc
         return LedgerEntry(seq, ts, entry_type, origin_node_id, message_id,
                            json.loads(payload_text), prev_hash, entry_hash)
+
+    # ---- reads
+    @staticmethod
+    def _to_entry(row: tuple) -> LedgerEntry:
+        return LedgerEntry(row[0], row[1], row[2], row[3], row[4], json.loads(row[5]), row[6], row[7])
+
+    def _fetch_batch(self, after_seq: int, limit: int) -> list[tuple]:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT seq, ts, entry_type, origin_node_id, message_id, payload, prev_hash,"
+                " entry_hash FROM entries WHERE seq > ? ORDER BY seq LIMIT ?",
+                (after_seq, limit),
+            ).fetchall()
+
+    def get(self, seq: int) -> LedgerEntry | None:
+        rows = self._fetch_batch(seq - 1, 1)
+        return self._to_entry(rows[0]) if rows and rows[0][0] == seq else None
+
+    def iter_entries(self, start_seq: int = 1, batch_size: int = 500) -> Iterator[LedgerEntry]:
+        """Stream entries with seq >= start_seq using keyset pagination (low memory)."""
+        after = max(start_seq, 1) - 1
+        while True:
+            rows = self._fetch_batch(after, batch_size)
+            if not rows:
+                return
+            for row in rows:
+                yield self._to_entry(row)
+            after = rows[-1][0]
+
+    def has_message(self, message_id: str) -> bool:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM entries WHERE message_id = ?", (message_id,)
+            ).fetchone() is not None
+
+    def count(self) -> int:
+        with self._lock:
+            return self._conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+
+    def head(self) -> tuple[int, str]:
+        """(seq, entry_hash) of the newest entry, or (0, GENESIS_HASH) if empty."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT seq, entry_hash FROM entries ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+        return (row[0], row[1]) if row else (0, GENESIS_HASH)
+
+
+
+    # ---- verification
+    def verify_chain(self, expected_head: tuple[int, str] | None = None) -> VerifyResult:
+        """Walk the whole chain and recompute every hash.
+
+        Detects edited rows, gaps/deleted rows, relinked or reordered rows and
+        non-canonical stored payloads. With ``expected_head`` (an externally
+        anchored ``head()``), also detects truncation and full-chain rewrites.
+        """
+        prev_hash, expected_seq, checked = GENESIS_HASH, 1, 0
+
+        def fail(bad_seq: int | None, msg: str) -> VerifyResult:
+            return VerifyResult(False, checked, expected_seq - 1, prev_hash, bad_seq, msg)
+
+        after = 0
+        while True:
+            rows = self._fetch_batch(after, 500)
+            if not rows:
+                break
+            for (seq, ts, etype, origin, mid, payload_text, row_prev, row_hash) in rows:
+                if seq != expected_seq:
+                    return fail(expected_seq, f"sequence gap: expected {expected_seq}, found {seq}")
+                if row_prev != prev_hash:
+                    return fail(seq, "prev_hash does not match previous entry_hash")
+                try:
+                    payload = json.loads(payload_text)
+                    canonical = canonical_json(payload).decode("utf-8")
+                except (ValueError, TypeError):
+                    return fail(seq, "payload is not valid strict JSON")
+                if canonical != payload_text:
+                    return fail(seq, "stored payload is not in canonical form")
+                if compute_entry_hash(seq, ts, etype, origin, mid, payload, row_prev) != row_hash:
+                    return fail(seq, "entry_hash mismatch (entry was modified)")
+                prev_hash, expected_seq, checked = row_hash, expected_seq + 1, checked + 1
+                after = seq
+        head = (checked, prev_hash)
+        if expected_head is not None and tuple(expected_head) != head:
+            return VerifyResult(
+                False, checked, head[0], head[1], None,
+                f"head mismatch: expected {tuple(expected_head)}, chain ends at {head} "
+                "(truncated or rewritten)",
+            )
+        return VerifyResult(True, checked, head[0], head[1])
+
+
+
+
+    
+
+   
