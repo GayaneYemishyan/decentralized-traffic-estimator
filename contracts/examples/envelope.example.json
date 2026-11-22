@@ -1,0 +1,19 @@
+{
+  "schema_version": "0.1.0",
+  "message_id": "3f2b8c1e-5a4d-4e7b-9c10-2d6f8a1b7e55",
+  "origin_node_id": "node-a",
+  "created_at": "2026-11-20T10:00:10.300Z",
+  "payload_type": "state",
+  "payload": {
+    "schema_version": "0.1.0",
+    "node_id": "node-a",
+    "seq": 42,
+    "timestamp": "2026-11-20T10:00:10.250Z",
+    "state": "moderate",
+    "congestion_score": 0.55,
+    "confidence": 0.8,
+    "scope": "local",
+    "contributing_peers": []
+  },
+  "payload_sha256": "f2c7dd90b49eee8aae626a30dc6e225b258a60a09b8e66aa4fe8ea82ae158c02"
+}
