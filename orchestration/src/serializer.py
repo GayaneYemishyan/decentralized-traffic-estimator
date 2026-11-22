@@ -20,13 +20,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from jsonschema import Draft202012Validator
 
 SUPPORTED_SCHEMA_VERSION = "0.2.0"
 _SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+MAX_ENVELOPE_BYTES = 65536  # same limit as the bridge (contracts/bridge_api.md)
 _KINDS = ("metrics", "state", "envelope")
 
 
@@ -88,13 +89,15 @@ def _reject_constant(name: str) -> Any:
 
 
 def decode_json(raw: bytes | str) -> Any:
-    """Strict JSON decode: UTF-8 only, no NaN/Infinity."""
+    """Strict JSON decode: UTF-8 only, no NaN/Infinity. Raises only MalformedMessageError."""
     try:
         text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
         return json.loads(text, parse_constant=_reject_constant)
     except MalformedMessageError:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except RecursionError as exc:  # hostile deep nesting
+        raise MalformedMessageError("invalid JSON: nesting too deep") from exc
+    except (ValueError, TypeError) as exc:  # JSONDecodeError, UnicodeDecodeError, oversized integers, non-str input
         raise MalformedMessageError(f"invalid JSON: {exc}") from exc
 
 
@@ -141,18 +144,32 @@ def _check_version(kind: str, obj: Any) -> None:
 
 def _validate(kind: str, obj: Any) -> None:
     _check_version(kind, obj)
-    errors = sorted(_validator(kind).iter_errors(obj), key=lambda e: [str(p) for p in e.absolute_path])
+    try:
+        errors = sorted(_validator(kind).iter_errors(obj), key=lambda e: [str(p) for p in e.absolute_path])
+    except RecursionError as exc:
+        raise SchemaValidationError(kind, ["<root>: nesting too deep"]) from exc
     if errors:
         msgs = ["/".join(str(p) for p in e.absolute_path) or "<root>" for e in errors]
         raise SchemaValidationError(kind, [f"{loc}: {e.message}" for loc, e in zip(msgs, errors)])
+
+
+def _timestamp_errors(obj: Mapping[str, Any], fields: tuple[str, ...]) -> list[str]:
+    """The schema pattern checks shape only; reject impossible dates like 2026-13-45."""
+    errs = []
+    for name in fields:
+        try:
+            parse_timestamp(obj[name])
+        except ValueError:
+            errs.append(f"{name}: not a valid UTC timestamp ({obj[name]!r})")
+    return errs
 
 
 # --------------------------------------------------------------------------- validators
 def validate_metrics(obj: Any) -> Mapping[str, Any]:
     """Validate a metrics message (P1 -> P2), including cross-field rules."""
     _validate("metrics", obj)
-    errs: list[str] = []
-    if parse_timestamp(obj["interval_end"]) <= parse_timestamp(obj["interval_start"]):
+    errs = _timestamp_errors(obj, ("interval_start", "interval_end"))
+    if not errs and parse_timestamp(obj["interval_end"]) <= parse_timestamp(obj["interval_start"]):
         errs.append("interval_end: must be after interval_start")
     seen: set[str] = set()
     for i, lane in enumerate(obj["lanes"]):
@@ -169,13 +186,35 @@ def validate_metrics(obj: Any) -> Mapping[str, Any]:
 def validate_state(obj: Any) -> Mapping[str, Any]:
     """Validate a state message (P2 -> P3/P4)."""
     _validate("state", obj)
+    if errs := _timestamp_errors(obj, ("timestamp",)):
+        raise SchemaValidationError("state", errs)
     return obj
 
 
 def validate_envelope(obj: Any) -> Mapping[str, Any]:
-    """Structural validation only. Use :func:`parse_envelope` for digest checks."""
+    """Structure and timestamp validity only. Use :func:`parse_envelope` for digest checks."""
     _validate("envelope", obj)
+    if errs := _timestamp_errors(obj, ("created_at",)):
+        raise SchemaValidationError("envelope", errs)
     return obj
+
+
+# payload_type -> validator. Every registered payload MUST carry a string ``node_id``
+# (parse_envelope uses it for the origin check). The envelope schema's payload_type
+# enum and this registry must be extended together.
+_PAYLOAD_VALIDATORS: dict[str, Callable[[Any], Mapping[str, Any]]] = {"state": validate_state}
+
+
+def _validate_payload(payload_type: str, payload: Any) -> str:
+    """Validate an envelope payload by type and return its node_id (safe for any type)."""
+    validator = _PAYLOAD_VALIDATORS.get(payload_type)
+    if validator is None:
+        raise SchemaValidationError("envelope", [f"payload_type: unsupported {payload_type!r}"])
+    validated = validator(payload)
+    node_id = validated.get("node_id") if isinstance(validated, Mapping) else None
+    if not isinstance(node_id, str):
+        raise SchemaValidationError("envelope", [f"payload: type {payload_type!r} has no string node_id"])
+    return node_id
 
 
 # --------------------------------------------------------------------------- envelope
@@ -232,17 +271,24 @@ def parse_envelope(
 ) -> Envelope:
     """Decode and fully verify a peer envelope.
 
-    Order: JSON -> version -> schema -> digest -> inner payload -> origin ->
-    clock skew. Only *future* skew is rejected: delayed delivery is normal in
+    Order: size -> JSON -> version -> schema -> digest -> inner payload -> origin ->
+    clock skew. Raises only :class:`ContractError` subclasses, never a bare
+    ValueError/RecursionError, so an ingestion loop can catch one type. Only *future* skew is rejected: delayed delivery is normal in
     gossip, so staleness is the caller's policy (seq / age checks).
     """
+    size = len(raw) if isinstance(raw, (bytes, bytearray)) else len(str(raw).encode("utf-8"))
+    if size > MAX_ENVELOPE_BYTES:
+        raise MalformedMessageError(f"envelope is {size} bytes, limit {MAX_ENVELOPE_BYTES}")
     obj = decode_json(raw)
     validate_envelope(obj)
-    if not hmac.compare_digest(payload_digest(obj["payload"]), obj["payload_sha256"]):
+    try:
+        digest = payload_digest(obj["payload"])
+    except (RecursionError, ValueError, TypeError) as exc:
+        raise MalformedMessageError(f"payload cannot be canonicalized: {exc}") from exc
+    if not hmac.compare_digest(digest, obj["payload_sha256"]):
         raise IntegrityError("payload_sha256 does not match payload")
-    if obj["payload_type"] == "state":
-        validate_state(obj["payload"])
-    if obj["payload"]["node_id"] != obj["origin_node_id"]:
+    node_id = _validate_payload(obj["payload_type"], obj["payload"])
+    if node_id != obj["origin_node_id"]:
         raise IntegrityError("origin_node_id does not match payload.node_id")
     created = parse_timestamp(obj["created_at"])
     if max_future_skew_s is not None:
@@ -260,3 +306,17 @@ def parse_envelope(
         payload=obj["payload"],
         payload_sha256=obj["payload_sha256"],
     )
+
+
+def check_peer_identity(envelope: Envelope, from_peer: str) -> None:
+    """Reject an envelope whose claimed origin is not the libp2p peer that authored it.
+
+    ``from_peer`` comes from the bridge's ``/subscribe`` (gossipsub authenticates the
+    author). Only meaningful once the team adopts ``node_id == libp2p peer ID``
+    (see contracts/bridge_api.md). The ingestion layer (``microservice.py``) calls
+    this after :func:`parse_envelope`; the ledger never sees transport metadata.
+    """
+    if envelope.origin_node_id != from_peer:
+        raise IntegrityError(
+            f"origin_node_id {envelope.origin_node_id!r} does not match authoring peer {from_peer!r}"
+        )
