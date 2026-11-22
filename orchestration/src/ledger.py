@@ -189,3 +189,37 @@ class Ledger:
             payload_text = canonical_json(payload).decode("utf-8")
         except (TypeError, ValueError) as exc:
             raise LedgerError(f"payload is not serializable as strict JSON: {exc}") from exc
+
+
+
+             ts = utc_now_iso(self._clock() if self._clock else None)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if message_id is not None and self._conn.execute(
+                        "SELECT 1 FROM entries WHERE message_id = ?", (message_id,)
+                    ).fetchone():
+                        raise DuplicateMessageError(f"message_id {message_id} already recorded")
+                    row = self._conn.execute(
+                        "SELECT seq, entry_hash FROM entries ORDER BY seq DESC LIMIT 1"
+                    ).fetchone()
+                    seq, prev_hash = (row[0] + 1, row[1]) if row else (1, GENESIS_HASH)
+                    entry_hash = compute_entry_hash(
+                        seq, ts, entry_type, origin_node_id, message_id,
+                        json.loads(payload_text), prev_hash,
+                    )
+                    self._conn.execute(
+                        "INSERT INTO entries (seq, ts, entry_type, origin_node_id, message_id,"
+                        " payload, prev_hash, entry_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (seq, ts, entry_type, origin_node_id, message_id,
+                         payload_text, prev_hash, entry_hash),
+                    )
+                    self._conn.execute("COMMIT")
+                except BaseException:
+                    self._conn.execute("ROLLBACK")
+                    raise
+            except sqlite3.Error as exc:
+                raise LedgerError(f"ledger write failed: {exc}") from exc
+        return LedgerEntry(seq, ts, entry_type, origin_node_id, message_id,
+                           json.loads(payload_text), prev_hash, entry_hash)
