@@ -289,3 +289,112 @@ def test_old_message_not_rejected_by_skew(state):
 def test_unique_message_ids(state):
     ids = {s.build_envelope(state, "node-a")["message_id"] for _ in range(50)}
     assert len(ids) == 50
+
+
+# ----------------------------------------------------------------- impossible calendar timestamps
+BAD_CALENDAR = ["2026-13-45T25:61:61.000Z", "2026-02-30T10:00:00.000Z", "0000-01-01T00:00:00.000Z", "2026-06-30T23:59:60.000Z"]
+
+
+@pytest.mark.parametrize("ts", BAD_CALENDAR)
+def test_state_rejects_impossible_timestamp(state, ts):
+    state["timestamp"] = ts
+    with pytest.raises(s.SchemaValidationError, match="timestamp"):
+        s.validate_state(state)
+
+
+@pytest.mark.parametrize("field", ["interval_start", "interval_end"])
+@pytest.mark.parametrize("ts", BAD_CALENDAR)
+def test_metrics_rejects_impossible_timestamp(metrics, field, ts):
+    metrics[field] = ts
+    with pytest.raises(s.SchemaValidationError, match=field):  # a ContractError, never a bare ValueError
+        s.validate_metrics(metrics)
+
+
+@pytest.mark.parametrize("ts", BAD_CALENDAR)
+def test_envelope_rejects_impossible_timestamp(state, ts):
+    env = s.build_envelope(state, "node-a", now=NOW)
+    env["created_at"] = ts
+    with pytest.raises(s.SchemaValidationError, match="created_at"):
+        s.parse_envelope(json.dumps(env))
+
+
+# ----------------------------------------------------------------- hostile peer input: only ContractError may escape
+HOSTILE = {
+    "empty": b"",
+    "null": b"null",
+    "array": b"[]",
+    "number": b"123",
+    "string": b'"text"',
+    "empty_object": b"{}",
+    "bad_utf8": b"\xff\xfe\x00",
+    "truncated": b'{"schema_version": "0.2.0", "message_id":',
+    "deep_nesting": b"[" * 30000 + b"]" * 30000,
+    "huge_integer": b'{"seq": ' + b"9" * 5000 + b"}",
+    "nan": b'{"payload": NaN}',
+    "oversize": b'{"x": "' + b"a" * s.MAX_ENVELOPE_BYTES + b'"}',
+}
+
+
+@pytest.mark.parametrize("raw", HOSTILE.values(), ids=HOSTILE.keys())
+def test_parse_envelope_only_raises_contract_errors(raw):
+    with pytest.raises(s.ContractError):
+        s.parse_envelope(raw)
+
+
+@pytest.mark.parametrize("raw", [b"[" * 100000 + b"]" * 100000, b'{"a":' + b"9" * 5000 + b"}", None, 5])
+def test_decode_json_only_raises_malformed(raw):
+    with pytest.raises(s.MalformedMessageError):
+        s.decode_json(raw)
+
+
+def test_deeply_nested_payload_does_not_crash_validation(state):
+    state["contributing_peers"] = [[[[]]]]
+    with pytest.raises(s.SchemaValidationError):
+        s.validate_state(state)
+
+
+def test_envelope_size_limit_applies_to_str_too(state):
+    env = s.build_envelope(state, "node-a", now=NOW)
+    env["padding"] = "a" * s.MAX_ENVELOPE_BYTES
+    with pytest.raises(s.MalformedMessageError, match="limit"):
+        s.parse_envelope(json.dumps(env))
+
+
+def test_envelope_at_size_limit_boundary_is_not_a_size_error(state):
+    raw = s.encode_envelope(s.build_envelope(state, "node-a", now=NOW))
+    assert len(raw) < s.MAX_ENVELOPE_BYTES
+    s.parse_envelope(raw)
+
+
+# ----------------------------------------------------------------- payload_type handling
+def test_non_state_payload_type_rejected_by_schema(state):
+    env = s.build_envelope(state, "node-a", now=NOW)
+    env["payload_type"] = "metrics"
+    with pytest.raises(s.SchemaValidationError, match="payload_type"):
+        s.parse_envelope(json.dumps(env))
+
+
+def test_unknown_payload_type_is_handled_safely_even_past_the_schema():
+    with pytest.raises(s.SchemaValidationError, match="unsupported"):
+        s._validate_payload("bogus", {"node_id": "node-a"})
+
+
+def test_registered_payload_type_must_provide_node_id(monkeypatch):
+    monkeypatch.setitem(s._PAYLOAD_VALIDATORS, "future", lambda payload: payload)
+    with pytest.raises(s.SchemaValidationError, match="node_id"):
+        s._validate_payload("future", {"no_node_id_here": 1})  # no KeyError
+    with pytest.raises(s.SchemaValidationError, match="node_id"):
+        s._validate_payload("future", {"node_id": 7})
+    assert s._validate_payload("future", {"node_id": "node-x"}) == "node-x"
+
+
+# ----------------------------------------------------------------- peer identity (ingestion layer helper)
+def test_peer_identity_match(state):
+    env = s.parse_envelope(s.encode_envelope(s.build_envelope(state, "node-a", now=NOW)))
+    s.check_peer_identity(env, "node-a")
+
+
+def test_peer_identity_mismatch_rejected(state):
+    env = s.parse_envelope(s.encode_envelope(s.build_envelope(state, "node-a", now=NOW)))
+    with pytest.raises(s.IntegrityError, match="authoring peer"):
+        s.check_peer_identity(env, "12D3KooWSomeoneElse")
