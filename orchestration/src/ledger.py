@@ -1,24 +1,35 @@
 """Tamper-evident, append-only ledger (SQLite + SHA-256 hash chain).
 
-Guarantees
-  * Append-only at the database level: UPDATE and DELETE are aborted by triggers.
-  * Tamper-evident: every entry commits to its predecessor
-    (``prev_hash`` -> ``entry_hash``), so edits, deletions in the middle and
-    reordering are detected by :meth:`Ledger.verify_chain`.
-  * Durable: WAL + ``synchronous=FULL`` so an acknowledged append survives power loss.
-  * Duplicate-safe: a given ``message_id`` can be recorded only once.
+Three layers, each with a stated limit:
 
-Known limit (inherent to any local hash chain): someone with file access who
-rewrites the *whole* chain from the tampered entry onward, or truncates the
-tail, produces a chain that is internally consistent. Defend against it by
-anchoring :meth:`Ledger.head` somewhere the attacker cannot reach (printed
-log, peer, removable media) and passing it as ``expected_head`` to
-``verify_chain``.
+1. **Database triggers**, enforced for every connection to the file. UPDATE and
+   DELETE are aborted, and INSERT must be strictly sequential: ``seq`` is
+   ``max(seq) + 1``, ``prev_hash`` is the previous ``entry_hash``, and
+   ``message_id`` / ``entry_hash`` are not already present. The last two rules
+   matter because ``INSERT OR REPLACE`` resolves a conflict by deleting the old
+   row *without firing DELETE triggers*; checking before the insert closes that
+   path. Limit: whoever can DROP TRIGGER, edit the schema or swap the file can
+   bypass this layer. The triggers are re-created every time the ledger is opened.
+2. **Hash chain**: every entry commits to its predecessor
+   (``prev_hash`` -> ``entry_hash``), so :meth:`Ledger.verify_chain` detects edited
+   fields, deleted or reordered rows and non-canonical payloads, even if layer 1
+   was bypassed. Limit: an attacker who rewrites the chain consistently from the
+   edited entry onward, or cuts off the tail, leaves a chain that is internally valid.
+3. **External anchor**: persist :meth:`Ledger.head` somewhere the attacker cannot
+   reach (log line, peer, removable media) and pass it as ``anchor`` to
+   ``verify_chain``. It checks that the entry at the anchored ``seq`` still has the
+   anchored hash, so an anchor stays valid as new entries are appended. It detects
+   rewrites and truncation at or before the anchor, but not changes made only to
+   entries *after* it, so anchor often.
+
+Also: durable (WAL + ``synchronous=FULL``) and duplicate-safe (a ``message_id`` is
+recorded once).
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -29,7 +40,7 @@ from typing import Any, Callable, Iterator, Mapping
 from .serializer import ContractError, canonical_json, utc_now_iso, validate_state
 
 GENESIS_HASH = "0" * 64
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: added the sequential-insert trigger
 ENTRY_TYPES = ("state", "action")
 
 _SCHEMA = """
@@ -48,7 +59,20 @@ CREATE TRIGGER IF NOT EXISTS entries_no_update BEFORE UPDATE ON entries
 BEGIN SELECT RAISE(ABORT, 'ledger is append-only: UPDATE forbidden'); END;
 CREATE TRIGGER IF NOT EXISTS entries_no_delete BEFORE DELETE ON entries
 BEGIN SELECT RAISE(ABORT, 'ledger is append-only: DELETE forbidden'); END;
-"""
+CREATE TRIGGER IF NOT EXISTS entries_sequential_insert BEFORE INSERT ON entries
+BEGIN
+    SELECT RAISE(ABORT, 'ledger is append-only: seq must be max(seq)+1')
+    WHERE NEW.seq IS NOT (SELECT COALESCE(MAX(seq), 0) + 1 FROM entries);
+    SELECT RAISE(ABORT, 'ledger is append-only: prev_hash must equal the previous entry_hash')
+    WHERE NEW.prev_hash IS NOT COALESCE(
+        (SELECT entry_hash FROM entries ORDER BY seq DESC LIMIT 1), '__GENESIS__');
+    SELECT RAISE(ABORT, 'ledger is append-only: message_id already recorded')
+    WHERE NEW.message_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM entries WHERE message_id = NEW.message_id);
+    SELECT RAISE(ABORT, 'ledger is append-only: entry_hash already recorded')
+    WHERE EXISTS (SELECT 1 FROM entries WHERE entry_hash = NEW.entry_hash);
+END;
+""".replace("__GENESIS__", GENESIS_HASH)
 
 
 # --------------------------------------------------------------------------- errors
@@ -131,13 +155,16 @@ class Ledger:
             )
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=FULL")
+            self._conn.execute("PRAGMA recursive_triggers=ON")  # defence in depth for this connection
             version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, SCHEMA_VERSION):
+            if version not in (0, 1, SCHEMA_VERSION):
                 raise LedgerError(
                     f"ledger schema version {version} unsupported (expected {SCHEMA_VERSION})"
                 )
-            if version == 0:
-                self._conn.executescript(_SCHEMA)
+            # Idempotent: creates the table on a new file, migrates v1 (adds the insert
+            # trigger) and silently restores any trigger removed while the node was down.
+            self._conn.executescript(_SCHEMA)
+            if version != SCHEMA_VERSION:
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         except sqlite3.Error as exc:
             raise LedgerError(f"cannot open ledger at {self._path}: {exc}") from exc
@@ -152,9 +179,6 @@ class Ledger:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
-
- 
-
 
     # ---- writes
     def append(
@@ -189,8 +213,6 @@ class Ledger:
             payload_text = canonical_json(payload).decode("utf-8")
         except (TypeError, ValueError) as exc:
             raise LedgerError(f"payload is not serializable as strict JSON: {exc}") from exc
-
-
 
         ts = utc_now_iso(self._clock() if self._clock else None)
         with self._lock:
@@ -270,16 +292,26 @@ class Ledger:
             ).fetchone()
         return (row[0], row[1]) if row else (0, GENESIS_HASH)
 
-
-
     # ---- verification
-    def verify_chain(self, expected_head: tuple[int, str] | None = None) -> VerifyResult:
+    @staticmethod
+    def _check_anchor(anchor: object) -> tuple[int, str]:
+        if (not isinstance(anchor, tuple) or len(anchor) != 2
+                or isinstance(anchor[0], bool) or not isinstance(anchor[0], int) or anchor[0] < 0
+                or not isinstance(anchor[1], str) or not re.fullmatch(r"[0-9a-f]{64}", anchor[1])):
+            raise LedgerError("anchor must be a (seq >= 0, 64-char lowercase hex hash) tuple, as returned by head()")
+        return anchor
+
+    def verify_chain(self, anchor: tuple[int, str] | None = None) -> VerifyResult:
         """Walk the whole chain and recompute every hash.
 
-        Detects edited rows, gaps/deleted rows, relinked or reordered rows and
-        non-canonical stored payloads. With ``expected_head`` (an externally
-        anchored ``head()``), also detects truncation and full-chain rewrites.
+        Detects edited rows (any hashed field), gaps/deleted rows, relinked or
+        reordered rows and non-canonical stored payloads. With ``anchor`` (a
+        ``head()`` saved earlier, outside the database) it also checks that the
+        entry at ``anchor`` seq still carries the anchored hash, which exposes
+        truncation and full-chain rewrites at or before that point. New entries
+        appended after the anchor do not invalidate it.
         """
+        anchor_seq, anchor_hash = self._check_anchor(anchor) if anchor is not None else (None, None)
         prev_hash, expected_seq, checked = GENESIS_HASH, 1, 0
 
         def fail(bad_seq: int | None, msg: str) -> VerifyResult:
@@ -304,20 +336,12 @@ class Ledger:
                     return fail(seq, "stored payload is not in canonical form")
                 if compute_entry_hash(seq, ts, etype, origin, mid, payload, row_prev) != row_hash:
                     return fail(seq, "entry_hash mismatch (entry was modified)")
+                if seq == anchor_seq and row_hash != anchor_hash:
+                    return fail(seq, f"anchor mismatch: entry {seq} no longer has the anchored hash (chain was rewritten)")
                 prev_hash, expected_seq, checked = row_hash, expected_seq + 1, checked + 1
                 after = seq
-        head = (checked, prev_hash)
-        if expected_head is not None and tuple(expected_head) != head:
-            return VerifyResult(
-                False, checked, head[0], head[1], None,
-                f"head mismatch: expected {tuple(expected_head)}, chain ends at {head} "
-                "(truncated or rewritten)",
-            )
-        return VerifyResult(True, checked, head[0], head[1])
-
-
-
-
-    
-
-   
+        if anchor_seq == 0 and anchor_hash != GENESIS_HASH:
+            return fail(None, "anchor mismatch: seq 0 must carry the genesis hash")
+        if anchor_seq is not None and anchor_seq > checked:
+            return fail(None, f"chain ends at seq {checked}, before anchored seq {anchor_seq} (truncated)")
+        return VerifyResult(True, checked, checked, prev_hash)
