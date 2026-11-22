@@ -98,3 +98,7 @@ func (t *Transport) readLoop(ctx context.Context) {
 		}
 	}
 }
+func (t *Transport) Close() {
+	t.sub.Cancel()
+	t.topic.Close()
+}

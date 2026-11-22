@@ -76,9 +76,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	go func() { <-ctx.Done(); tr.Close() }()
 	if _, err := StartBridge(ctx, h, tr, *bridge); err != nil {
 		log.Fatal(err)
 	}
 
 	<-ctx.Done()
+	tr.Close()
 }
