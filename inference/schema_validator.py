@@ -1,16 +1,47 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 
 class SchemaValidationError(ValueError):
     """Raised when a metrics or state payload violates its contract schema."""
 
 
-_ISO_MILLIS_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+_SUPPORTED_KEYWORDS: FrozenSet[str] = frozenset({
+    "$schema",
+    "$id",
+    "$defs",
+    "definitions",
+    "title",
+    "description",
+    "$ref",
+    "const",
+    "enum",
+    "type",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "format",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "items",
+    "required",
+    "properties",
+    "additionalProperties",
+    "if",
+    "then",
+    "else",
+})
 
 
 def _repo_root() -> Path:
@@ -40,6 +71,17 @@ def _resolve_ref(ref: str, root_schema: Dict[str, Any]) -> Dict[str, Any]:
     return current
 
 
+def _is_valid_datetime(value: str) -> bool:
+    if "T" not in value and "t" not in value:
+        return False
+    normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
 def _check_type(value: Any, expected: str) -> bool:
     if expected == "object":
         return isinstance(value, dict)
@@ -50,12 +92,22 @@ def _check_type(value: Any, expected: str) -> bool:
     if expected == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if expected == "number":
-        return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        return math.isfinite(float(value))
     if expected == "boolean":
         return isinstance(value, bool)
     if expected == "null":
         return value is None
-    return True
+    return False
+
+
+def _reject_unsupported_keywords(schema: Dict[str, Any], path: str) -> None:
+    unsupported = sorted(k for k in schema.keys() if k not in _SUPPORTED_KEYWORDS)
+    if unsupported:
+        raise SchemaValidationError(
+            f"{path}: unsupported schema keyword(s) in fallback validator: {', '.join(unsupported)}"
+        )
 
 
 def _validate_node(
@@ -65,6 +117,8 @@ def _validate_node(
     path: str,
     errors: List[str],
 ) -> None:
+    _reject_unsupported_keywords(schema, path)
+
     if "$ref" in schema:
         target = _resolve_ref(schema["$ref"], root_schema)
         merged = {k: v for k, v in schema.items() if k != "$ref"}
@@ -89,16 +143,25 @@ def _validate_node(
     if isinstance(value, str):
         if "minLength" in schema and len(value) < schema["minLength"]:
             errors.append(f"{path}: length {len(value)} < minLength {schema['minLength']}")
-        if "pattern" in schema and not re.match(schema["pattern"], value):
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            errors.append(f"{path}: length {len(value)} > maxLength {schema['maxLength']}")
+        if "pattern" in schema and re.search(schema["pattern"], value) is None:
             errors.append(f"{path}: value {value!r} does not match pattern {schema['pattern']!r}")
-        if schema.get("format") == "date-time" and not _ISO_MILLIS_UTC_RE.match(value):
-            errors.append(f"{path}: timestamp {value!r} does not match YYYY-MM-DDTHH:MM:SS.sssZ")
+        if schema.get("format") == "date-time" and not _is_valid_datetime(value):
+            errors.append(f"{path}: timestamp {value!r} is not a valid ISO-8601 date-time with timezone")
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(float(value)):
+            errors.append(f"{path}: numeric value {value!r} must be finite")
+            return
         if "minimum" in schema and value < schema["minimum"]:
             errors.append(f"{path}: value {value} < minimum {schema['minimum']}")
         if "maximum" in schema and value > schema["maximum"]:
             errors.append(f"{path}: value {value} > maximum {schema['maximum']}")
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+            errors.append(f"{path}: value {value} <= exclusiveMinimum {schema['exclusiveMinimum']}")
+        if "exclusiveMaximum" in schema and value >= schema["exclusiveMaximum"]:
+            errors.append(f"{path}: value {value} >= exclusiveMaximum {schema['exclusiveMaximum']}")
 
     if isinstance(value, list):
         if "minItems" in schema and len(value) < schema["minItems"]:
@@ -139,6 +202,8 @@ def _validate_node(
         _validate_node(value, schema["if"], root_schema, path, if_errors)
         if not if_errors and "then" in schema and isinstance(schema["then"], dict):
             _validate_node(value, schema["then"], root_schema, path, errors)
+        elif if_errors and "else" in schema and isinstance(schema["else"], dict):
+            _validate_node(value, schema["else"], root_schema, path, errors)
 
 
 def validate_payload(

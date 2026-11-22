@@ -1,5 +1,5 @@
-﻿import re
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 from inference.ontology import LaneObservation, NodeMetricsSnapshot, Scope, TemporalWindow, TrafficState
 from inference.smoother import TemporalSmoother
@@ -7,9 +7,10 @@ from inference.state_builder import build_state_payload
 
 
 def _snap(seq: int, occupancy: float, flow_vph: float, vehicles: int = 10):
+    base = datetime(2026, 11, 22, 12, 0, 0, tzinfo=timezone.utc)
     win = TemporalWindow(
-        start=datetime(2026, 11, 22, 12, 0, seq * 10, tzinfo=timezone.utc),
-        end=datetime(2026, 11, 22, 12, 0, seq * 10 + 10, tzinfo=timezone.utc),
+        start=base + timedelta(seconds=seq * 10),
+        end=base + timedelta(seconds=seq * 10 + 10),
     )
     return NodeMetricsSnapshot(
         schema_version="0.1.0",
@@ -62,3 +63,30 @@ def test_regional_scope_deduplicates_peers():
 
     assert payload["scope"] == "regional"
     assert payload["contributing_peers"] == ["peer-b", "peer-a"]
+
+
+def test_hysteresis_reduces_oscillations_on_noisy_sequence():
+    noisy_specs = [
+        (0.30, 600.0),
+        (0.42, 840.0),
+        (0.28, 560.0),
+        (0.45, 900.0),
+        (0.29, 580.0),
+        (0.44, 880.0),
+    ]
+
+    raw_smoother = TemporalSmoother(alpha=1.0, hysteresis=0.0, min_dwell_steps=1)
+    hyst_smoother = TemporalSmoother(alpha=0.5, hysteresis=0.08, min_dwell_steps=2)
+
+    raw_states = []
+    hyst_states = []
+    for idx, (occ, flow) in enumerate(noisy_specs, start=1):
+        snap = _snap(idx, occupancy=occ, flow_vph=flow)
+        raw_states.append(raw_smoother.update(snap).state)
+        hyst_states.append(hyst_smoother.update(snap).state)
+
+    raw_transitions = sum(1 for a, b in zip(raw_states, raw_states[1:]) if a != b)
+    hyst_transitions = sum(1 for a, b in zip(hyst_states, hyst_states[1:]) if a != b)
+
+    assert raw_transitions > 0
+    assert hyst_transitions < raw_transitions

@@ -1,4 +1,6 @@
-﻿from datetime import datetime, timezone
+from datetime import datetime, timezone
+
+import pytest
 
 from inference.ontology import (
     LaneObservation,
@@ -7,7 +9,7 @@ from inference.ontology import (
     TemporalWindow,
     TrafficState,
 )
-from inference.rules import classify_state, evaluate_snapshot
+from inference.rules import RuleConfig, classify_state, evaluate_snapshot, score_lane
 
 
 def _make_snapshot(lanes, start_sec=0, end_sec=10):
@@ -58,3 +60,37 @@ def test_congested_traffic_state():
 def test_score_bounds_clamped():
     assert classify_state(-0.5) == TrafficState.FREE
     assert classify_state(1.5) == TrafficState.CONGESTED
+
+
+def test_classification_boundaries_035_and_070():
+    assert classify_state(0.3499) == TrafficState.FREE
+    assert classify_state(0.35) == TrafficState.MODERATE
+    assert classify_state(0.6999) == TrafficState.MODERATE
+    assert classify_state(0.70) == TrafficState.CONGESTED
+
+
+def test_custom_rule_config_thresholds_and_weights():
+    cfg = RuleConfig(
+        moderate_threshold=0.25,
+        congested_threshold=0.60,
+        occupancy_weight=0.80,
+        flow_weight=0.20,
+    )
+    assert classify_state(0.24, config=cfg) == TrafficState.FREE
+    assert classify_state(0.25, config=cfg) == TrafficState.MODERATE
+    assert classify_state(0.60, config=cfg) == TrafficState.CONGESTED
+
+    lane = LaneObservation("lane-1", vehicle_count=10, flow_rate_vph=400.0, avg_occupancy=0.80)
+    default_score = score_lane(lane, capacity_vph=2000.0)
+    custom_score = score_lane(lane, capacity_vph=2000.0, config=cfg)
+    assert custom_score != default_score
+
+
+@pytest.mark.parametrize("bad_val", [float("nan"), float("inf"), float("-inf")])
+def test_rejects_non_finite_values(bad_val):
+    with pytest.raises(ValueError):
+        classify_state(bad_val)
+
+    lane = LaneObservation("lane-1", vehicle_count=5, flow_rate_vph=bad_val, avg_occupancy=0.2)
+    with pytest.raises(ValueError):
+        score_lane(lane)

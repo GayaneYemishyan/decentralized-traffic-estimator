@@ -1,4 +1,6 @@
-﻿from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from inference.aggregator import (
     PeerStateObservation,
@@ -93,3 +95,73 @@ def test_deduplicates_excludes_self_and_caps_at_64_peers():
     assert "node-local" not in payload["contributing_peers"]
     assert len(payload["contributing_peers"]) == 64
     assert payload["contributing_peers"][0] == "peer-1"
+
+
+def test_filters_stale_observations_by_max_age():
+    ref = datetime(2026, 11, 22, 12, 5, 0, tzinfo=timezone.utc)
+    local_eval = RuleEvaluation(
+        congestion_score=0.20,
+        confidence=0.80,
+        state=TrafficState.FREE,
+    )
+    peers = [
+        PeerStateObservation(
+            peer_id="fresh-peer",
+            congestion_score=0.30,
+            confidence=0.80,
+            seq=10,
+            timestamp=ref - timedelta(seconds=15),
+        ),
+        PeerStateObservation(
+            peer_id="stale-peer",
+            congestion_score=0.95,
+            confidence=0.99,
+            seq=11,
+            timestamp=ref - timedelta(seconds=120),
+        ),
+    ]
+
+    result = aggregate_peer_states(
+        local_eval,
+        peers,
+        local_node_id="node-local",
+        max_age_s=60.0,
+        reference_time=ref,
+    )
+
+    assert result.contributing_peers == ["fresh-peer"]
+    assert result.peer_count == 1
+    assert result.evaluation.state == TrafficState.FREE
+
+
+def test_deduplicates_keeping_highest_seq():
+    local_eval = RuleEvaluation(
+        congestion_score=0.50,
+        confidence=0.80,
+        state=TrafficState.MODERATE,
+    )
+    peers = [
+        PeerStateObservation(peer_id="peer-1", congestion_score=0.90, confidence=0.80, seq=2),
+        PeerStateObservation(peer_id="peer-1", congestion_score=0.20, confidence=0.80, seq=7),
+        PeerStateObservation(peer_id="peer-1", congestion_score=0.85, confidence=0.80, seq=5),
+    ]
+
+    result = aggregate_peer_states(local_eval, peers, local_node_id="node-local")
+
+    assert result.peer_count == 1
+    assert result.contributing_peers == ["peer-1"]
+    assert result.evaluation.congestion_score < 0.50
+
+
+def test_aggregator_rejects_nan_score():
+    local_eval = RuleEvaluation(
+        congestion_score=0.50,
+        confidence=0.80,
+        state=TrafficState.MODERATE,
+    )
+    peers = [
+        PeerStateObservation(peer_id="peer-1", congestion_score=float("nan"), confidence=0.80),
+    ]
+
+    with pytest.raises(ValueError):
+        aggregate_peer_states(local_eval, peers, local_node_id="node-local")
