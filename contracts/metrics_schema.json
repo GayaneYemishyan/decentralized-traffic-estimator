@@ -5,14 +5,41 @@
   "description": "Per-interval traffic metrics emitted by cv-module (or its synthetic generator).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "node_id", "seq", "interval_start", "interval_end", "source", "lanes"],
+  "required": [
+    "schema_version",
+    "node_id",
+    "seq",
+    "interval_start",
+    "interval_end",
+    "source",
+    "lanes"
+  ],
   "properties": {
-    "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
-    "node_id": { "$ref": "#/$defs/id" },
-    "seq": { "type": "integer", "minimum": 0, "description": "Monotonic per node, restarts only on node restart." },
-    "interval_start": { "$ref": "#/$defs/timestamp" },
-    "interval_end": { "$ref": "#/$defs/timestamp" },
-    "source": { "enum": ["live", "replay", "synthetic"] },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "node_id": {
+      "$ref": "#/$defs/id"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic per node, restarts only on node restart."
+    },
+    "interval_start": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "interval_end": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "source": {
+      "enum": [
+        "live",
+        "replay",
+        "synthetic"
+      ]
+    },
     "lanes": {
       "type": "array",
       "minItems": 1,
@@ -20,20 +47,60 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["lane_id", "vehicle_count", "flow_rate_vph", "avg_occupancy", "counts_by_class"],
+        "required": [
+          "lane_id",
+          "vehicle_count",
+          "flow_rate_vph",
+          "avg_occupancy",
+          "counts_by_class"
+        ],
         "properties": {
-          "lane_id": { "$ref": "#/$defs/id" },
-          "vehicle_count": { "type": "integer", "minimum": 0, "description": "Line crossings in the interval. Must equal the sum of counts_by_class." },
-          "flow_rate_vph": { "type": "number", "minimum": 0, "description": "Vehicles per hour, extrapolated from the interval." },
-          "avg_occupancy": { "type": "number", "minimum": 0, "maximum": 1, "description": "Mean fraction of the lane ROI occupied." },
+          "lane_id": {
+            "$ref": "#/$defs/id"
+          },
+          "vehicle_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Line crossings in the interval. Must equal the sum of counts_by_class."
+          },
+          "flow_rate_vph": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Vehicles per hour, extrapolated from the interval."
+          },
+          "avg_occupancy": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Mean fraction of the lane ROI occupied."
+          },
           "counts_by_class": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["emergency", "public", "private"],
+            "required": [
+              "car",
+              "motorcycle",
+              "bus",
+              "truck"
+            ],
+            "description": "Per-class line crossings using the COCO classes YOLOv8 detects (ids 2, 3, 5, 7). Each track is counted once, under one class.",
             "properties": {
-              "emergency": { "type": "integer", "minimum": 0 },
-              "public": { "type": "integer", "minimum": 0 },
-              "private": { "type": "integer", "minimum": 0 }
+              "car": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "motorcycle": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "bus": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "truck": {
+                "type": "integer",
+                "minimum": 0
+              }
             }
           }
         }
@@ -41,7 +108,14 @@
     }
   },
   "$defs": {
-    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
-    "timestamp": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$", "description": "UTC, RFC 3339, exactly millisecond precision." }
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "UTC, RFC 3339, exactly millisecond precision."
+    }
   }
 }

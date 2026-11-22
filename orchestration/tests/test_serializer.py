@@ -35,7 +35,7 @@ def test_examples_validate(metrics, state):
 
 
 # ----------------------------------------------------------------- versioning
-@pytest.mark.parametrize("bad", ["1.0.0", "0.2.0"])
+@pytest.mark.parametrize("bad", ["1.0.0", "0.1.0", "0.3.0"])
 def test_incompatible_version(state, bad):
     state["schema_version"] = bad
     with pytest.raises(s.UnsupportedVersionError):
@@ -43,7 +43,7 @@ def test_incompatible_version(state, bad):
 
 
 def test_compatible_patch_version(state):
-    state["schema_version"] = "0.1.7"
+    state["schema_version"] = f"{s.SUPPORTED_SCHEMA_VERSION[:-1]}7"
     s.validate_state(state)
 
 
@@ -145,6 +145,50 @@ def test_metrics_duplicate_lane(metrics):
 def test_metrics_occupancy_range(metrics):
     metrics["lanes"][0]["avg_occupancy"] = 1.5
     with pytest.raises(s.SchemaValidationError, match="avg_occupancy"):
+        s.validate_metrics(metrics)
+
+
+YOLO_CLASSES = ("car", "motorcycle", "bus", "truck")  # COCO ids 2, 3, 5, 7
+
+
+def test_metrics_classes_are_the_yolo_vehicle_classes():
+    schema = json.loads((s.contracts_dir() / "metrics_schema.json").read_text())
+    counts = schema["properties"]["lanes"]["items"]["properties"]["counts_by_class"]
+    assert tuple(counts["required"]) == YOLO_CLASSES
+    assert set(counts["properties"]) == set(YOLO_CLASSES)
+
+
+def test_metrics_legacy_classes_rejected(metrics):
+    metrics["lanes"][0]["counts_by_class"] = {"emergency": 0, "public": 1, "private": 3}
+    with pytest.raises(s.SchemaValidationError) as exc:
+        s.validate_metrics(metrics)
+    assert "counts_by_class" in str(exc.value)
+
+
+def test_metrics_missing_class_rejected(metrics):
+    del metrics["lanes"][0]["counts_by_class"]["truck"]
+    with pytest.raises(s.SchemaValidationError, match="truck"):
+        s.validate_metrics(metrics)
+
+
+def test_metrics_unknown_class_rejected(metrics):
+    metrics["lanes"][0]["counts_by_class"]["bicycle"] = 0  # not in the contract
+    with pytest.raises(s.SchemaValidationError, match="bicycle"):
+        s.validate_metrics(metrics)
+
+
+def test_metrics_negative_class_count_rejected(metrics):
+    metrics["lanes"][0]["counts_by_class"]["car"] = -1
+    with pytest.raises(s.SchemaValidationError, match="car"):
+        s.validate_metrics(metrics)
+
+
+def test_metrics_all_classes_contribute_to_total(metrics):
+    metrics["lanes"][0]["counts_by_class"] = {"car": 1, "motorcycle": 1, "bus": 1, "truck": 1}
+    metrics["lanes"][0]["vehicle_count"] = 4
+    s.validate_metrics(metrics)
+    metrics["lanes"][0]["vehicle_count"] = 3
+    with pytest.raises(s.SchemaValidationError, match="sum of counts_by_class"):
         s.validate_metrics(metrics)
 
 
