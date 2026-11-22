@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -72,8 +74,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	tr.OnMessage(func(from peer.ID, data []byte) {
-		fmt.Printf("[%s] %s\n", from.ShortString(), data)
+	tr.OnMessage(func(from peer.ID, env Envelope) {
+		fmt.Printf("[%s] node=%s ts=%d payload=%s\n", from.ShortString(), env.NodeID, env.Timestamp, env.Payload)
 	})
 
 	if err := StartDiscovery(ctx, h, *bootstrap); err != nil {
@@ -84,7 +86,14 @@ func main() {
 	go func() {
 		sc := bufio.NewScanner(os.Stdin)
 		for sc.Scan() {
-			if err := tr.Publish(ctx, sc.Bytes()); err != nil {
+			payload, _ := json.Marshal(map[string]string{"text": sc.Text()})
+			env := Envelope{
+				Version:   EnvelopeVersion,
+				NodeID:    h.ID().String(),
+				Timestamp: time.Now().Unix(),
+				Payload:   payload,
+			}
+			if err := tr.Publish(ctx, env); err != nil {
 				log.Printf("publish: %v", err)
 			}
 		}

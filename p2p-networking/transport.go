@@ -4,11 +4,13 @@ import (
 	"context"
 	"sync"
 
+	"log"
+
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-type MessageHandler func(from peer.ID, data []byte)
+type MessageHandler func(from peer.ID, env Envelope)
 
 type Transport struct {
 	topic    *pubsub.Topic
@@ -19,6 +21,16 @@ type Transport struct {
 }
 
 func NewTransport(ctx context.Context, ps *pubsub.PubSub, self peer.ID, topicName string) (*Transport, error) {
+	err := ps.RegisterTopicValidator(topicName, func(_ context.Context, _ peer.ID, msg *pubsub.Message) bool {
+		_, err := DecodeEnvelope(msg.Data)
+		if err != nil {
+			log.Printf("rejected invalid envelope from %s: %v", msg.GetFrom().ShortString(), err)
+		}
+		return err == nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	topic, err := ps.Join(topicName)
 	if err != nil {
 		return nil, err
@@ -32,8 +44,12 @@ func NewTransport(ctx context.Context, ps *pubsub.PubSub, self peer.ID, topicNam
 	return t, nil
 }
 
-// Publish sends opaque bytes to all peers on the topic.
-func (t *Transport) Publish(ctx context.Context, data []byte) error {
+// Publish sends an envelope to all peers on the topic.
+func (t *Transport) Publish(ctx context.Context, env Envelope) error {
+	data, err := EncodeEnvelope(env)
+	if err != nil {
+		return err
+	}
 	return t.topic.Publish(ctx, data)
 }
 
@@ -48,16 +64,21 @@ func (t *Transport) readLoop(ctx context.Context) {
 	for {
 		msg, err := t.sub.Next(ctx)
 		if err != nil {
-			return // context cancelled or subscription closed
+			return // ctx cancelled or subscription closed
 		}
 		if msg.GetFrom() == t.self {
-			continue // gossipsub echoes our own messages back
+			continue
+		}
+		env, err := DecodeEnvelope(msg.Data)
+		if err != nil {
+			log.Printf("dropping invalid envelope from %s: %v", msg.GetFrom().ShortString(), err)
+			continue
 		}
 		t.mu.RLock()
 		hs := append([]MessageHandler(nil), t.handlers...)
 		t.mu.RUnlock()
 		for _, h := range hs {
-			h(msg.GetFrom(), msg.Data)
+			h(msg.GetFrom(), env)
 		}
 	}
 }
