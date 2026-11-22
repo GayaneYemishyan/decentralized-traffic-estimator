@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from inference.ontology import NodeMetricsSnapshot, Scope, TrafficState
+from inference.ontology import NodeMetricsSnapshot, Scope
 from inference.rules import (
     DEFAULT_RULE_CONFIG,
     RuleConfig,
@@ -24,7 +24,19 @@ class PeerStateObservation:
     congestion_score: float
     confidence: float
     seq: Optional[int] = None
+    created_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
     timestamp: Optional[datetime] = None
+
+    def effective_created_at(self) -> Optional[datetime]:
+        return self.created_at if self.created_at is not None else self.timestamp
+
+    def effective_received_at(self) -> Optional[datetime]:
+        if self.received_at is not None:
+            return self.received_at
+        if self.timestamp is not None:
+            return self.timestamp
+        return self.created_at
 
 
 @dataclass(frozen=True)
@@ -65,18 +77,20 @@ def _is_stale(
     max_age = _ensure_finite(max_age_s, "max_age_s")
     if max_age < 0.0:
         raise ValueError("max_age_s must be non-negative")
-    if obs.timestamp is None:
+    recv_dt = obs.effective_received_at()
+    if recv_dt is None:
         return False
     ref_dt = reference_time if reference_time is not None else datetime.now(timezone.utc)
-    age_s = _to_utc_timestamp(ref_dt) - _to_utc_timestamp(obs.timestamp)
+    age_s = _to_utc_timestamp(ref_dt) - _to_utc_timestamp(recv_dt)
     _ensure_finite(age_s, "observation_age_s")
     return age_s > max_age
 
 
-def _obs_rank(obs: PeerStateObservation) -> Tuple[int, float]:
+def _obs_rank(obs: PeerStateObservation) -> Tuple[float, int]:
+    created_dt = obs.effective_created_at()
+    created_ts = _to_utc_timestamp(created_dt) if created_dt is not None else float("-inf")
     seq_val = obs.seq if obs.seq is not None else -1
-    ts_val = _to_utc_timestamp(obs.timestamp) if obs.timestamp is not None else float("-inf")
-    return (seq_val, ts_val)
+    return (created_ts, seq_val)
 
 
 def aggregate_peer_states(
@@ -108,6 +122,8 @@ def aggregate_peer_states(
             congestion_score=score,
             confidence=conf,
             seq=obs.seq,
+            created_at=obs.created_at,
+            received_at=obs.received_at,
             timestamp=obs.timestamp,
         )
 
@@ -134,7 +150,6 @@ def aggregate_peer_states(
             peer_count=0,
         )
 
-    # Combine local node (weight >= 0.05) and peers weighted by their confidence.
     entries: List[Tuple[float, float]] = [
         (
             _clamp01(local_evaluation.congestion_score, "local_score"),
@@ -148,13 +163,11 @@ def aggregate_peer_states(
     weighted_score = sum(score * weight for score, weight in entries) / total_weight
     regional_score = round(_clamp01(weighted_score, "regional_score"), 4)
 
-    # Agreement factor: 1.0 when all scores match, lower when scores diverge strongly.
     all_scores = [local_evaluation.congestion_score] + [p.congestion_score for p in valid_peers]
     mean_score = sum(all_scores) / len(all_scores)
     mean_abs_dev = sum(abs(s - mean_score) for s in all_scores) / len(all_scores)
     agreement = _clamp01(1.0 - min(1.0, mean_abs_dev * 2.0), "agreement")
 
-    # Coverage bonus up to +0.15 as more peers contribute (saturates around 4 peers).
     coverage_bonus = 0.15 * min(1.0, len(valid_peers) / 4.0)
 
     mean_conf = sum(weight for _, weight in entries) / len(entries)

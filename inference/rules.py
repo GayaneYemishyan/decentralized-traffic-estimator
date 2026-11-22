@@ -20,8 +20,8 @@ class RuleConfig:
 
     moderate_threshold: float = 0.35
     congested_threshold: float = 0.70
-    occupancy_weight: float = 0.65
-    flow_weight: float = 0.35
+    occupancy_weight: float = 0.70
+    flow_weight: float = 0.30
 
     def __post_init__(self) -> None:
         _ensure_finite(self.moderate_threshold, "moderate_threshold")
@@ -66,13 +66,26 @@ def score_lane(
     occ = _ensure_finite(lane.avg_occupancy, "avg_occupancy")
     flow = _ensure_finite(lane.flow_rate_vph, "flow_rate_vph")
 
-    occupancy_component = _clamp01(occ, "avg_occupancy")
-    flow_component = _clamp01(flow / cap, "flow_rate_vph") if cap > 0 else 0.0
+    occ_clamped = _clamp01(occ, "avg_occupancy")
+    flow_ratio = _clamp01(flow / cap, "flow_rate_vph") if cap > 0 else 0.0
+
+    # In a traffic jam, occupancy is high while flow collapses/stalls.
+    # When occupancy is elevated (>= 0.5), dropping flow indicates breakdown/jam rather than free flow.
+    jam_slowdown_factor = max(0.0, (occ_clamped - 0.5) * 2.0)
+    effective_flow_component = (
+        (1.0 - flow_ratio) * jam_slowdown_factor + flow_ratio * (1.0 - jam_slowdown_factor)
+    )
 
     total_w = config.occupancy_weight + config.flow_weight
     w_occ = config.occupancy_weight / total_w
     w_flow = config.flow_weight / total_w
-    return _clamp01(w_occ * occupancy_component + w_flow * flow_component, "lane_score")
+
+    combined = w_occ * occ_clamped + w_flow * effective_flow_component
+    # Boost jam severity when occupancy is high and flow is heavily restricted.
+    if occ_clamped >= 0.75 and flow_ratio <= 0.35:
+        combined = max(combined, min(1.0, occ_clamped + 0.12 * (1.0 - flow_ratio)))
+
+    return _clamp01(combined, "lane_score")
 
 
 def classify_state(
@@ -95,14 +108,16 @@ def compute_confidence(lanes: Sequence[LaneObservation], window_seconds: float) 
         _ensure_finite(lane.avg_occupancy, "avg_occupancy")
         _ensure_finite(lane.flow_rate_vph, "flow_rate_vph")
 
-    lane_factor = _clamp01(len(lanes) / 4.0, "lane_factor")
+    # Active sensor coverage + temporal window reliability + vehicle/occupancy evidence.
+    # Avoids penalizing a jam when vehicles stop moving across the detector line.
+    lane_coverage = min(1.0, 0.75 + 0.25 * (len(lanes) / 4.0))
+    window_factor = 1.0 if win_sec > 0 else 0.5
     total_vehicles = sum(max(lane.vehicle_count, 0) for lane in lanes)
-    volume_factor = _clamp01(total_vehicles / 10.0, "volume_factor")
-    window_factor = 1.0 if win_sec > 0 else 0.3
-    return round(
-        _clamp01(0.45 * lane_factor + 0.35 * volume_factor + 0.20 * window_factor, "confidence"),
-        4,
-    )
+    max_occ = max(_clamp01(lane.avg_occupancy, "avg_occupancy") for lane in lanes)
+    evidence_factor = 1.0 if (total_vehicles > 0 or max_occ >= 0.5) else 0.75
+
+    confidence = lane_coverage * window_factor * evidence_factor
+    return round(_clamp01(confidence, "confidence"), 4)
 
 
 def evaluate_snapshot(

@@ -80,7 +80,7 @@ def test_custom_rule_config_thresholds_and_weights():
     assert classify_state(0.25, config=cfg) == TrafficState.MODERATE
     assert classify_state(0.60, config=cfg) == TrafficState.CONGESTED
 
-    lane = LaneObservation("lane-1", vehicle_count=10, flow_rate_vph=400.0, avg_occupancy=0.80)
+    lane = LaneObservation("lane-1", vehicle_count=6, flow_rate_vph=1200.0, avg_occupancy=0.45)
     default_score = score_lane(lane, capacity_vph=2000.0)
     custom_score = score_lane(lane, capacity_vph=2000.0, config=cfg)
     assert custom_score != default_score
