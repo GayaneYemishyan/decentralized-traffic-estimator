@@ -498,3 +498,10 @@ def test_concurrent_appends_keep_chain_valid(ledger, state):
     assert ledger.count() == 200
     result = ledger.verify_chain()
     assert result and result.entries_checked == 200
+
+
+def test_nan_state_is_refused_and_nothing_is_written(ledger, state):
+    state["congestion_score"] = float("nan")
+    with pytest.raises(LedgerError, match="NaN"):
+        ledger.append("state", state, origin_node_id="node-a")
+    assert ledger.count() == 0
