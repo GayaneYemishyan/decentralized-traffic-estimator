@@ -398,3 +398,41 @@ def test_peer_identity_mismatch_rejected(state):
     env = s.parse_envelope(s.encode_envelope(s.build_envelope(state, "node-a", now=NOW)))
     with pytest.raises(s.IntegrityError, match="authoring peer"):
         s.check_peer_identity(env, "12D3KooWSomeoneElse")
+
+
+# ----------------------------------------------------------------- NaN / Infinity in in-process dicts
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("field", ["congestion_score", "confidence"])
+def test_state_rejects_non_finite_numbers(state, field, bad):
+    state[field] = bad
+    with pytest.raises(s.SchemaValidationError, match=field):
+        s.validate_state(state)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+@pytest.mark.parametrize("field", ["avg_occupancy", "flow_rate_vph"])
+def test_metrics_reject_non_finite_numbers(metrics, field, bad):
+    metrics["lanes"][1][field] = bad
+    with pytest.raises(s.SchemaValidationError, match=f"lanes/1/{field}"):
+        s.validate_metrics(metrics)
+
+
+def test_build_envelope_raises_a_contract_error_for_nan(state):
+    state["congestion_score"] = float("nan")
+    with pytest.raises(s.ContractError):  # used to escape as a bare ValueError
+        s.build_envelope(state, "node-a")
+
+
+def test_envelope_payload_nan_is_reported_with_its_path(state):
+    env = s.build_envelope(state, "node-a", now=NOW)
+    env["payload"]["congestion_score"] = float("nan")
+    with pytest.raises(s.SchemaValidationError, match="payload/congestion_score"):
+        s.validate_envelope(env)
+
+
+def test_all_non_finite_fields_are_listed_together(state):
+    state["congestion_score"] = float("nan")
+    state["confidence"] = float("inf")
+    with pytest.raises(s.SchemaValidationError) as exc:
+        s.validate_state(state)
+    assert len(exc.value.errors) == 2
