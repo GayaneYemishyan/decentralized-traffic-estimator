@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import uuid
@@ -142,8 +143,27 @@ def _check_version(kind: str, obj: Any) -> None:
         raise UnsupportedVersionError(kind, version)
 
 
+def _non_finite_paths(obj: Any) -> list[str]:
+    """Paths of NaN/Infinity floats. NaN fails every comparison, so the schema's min/max checks
+    cannot catch it; it would also never satisfy a threshold. Iterative: safe on deep input."""
+    bad: list[str] = []
+    stack: list[tuple[str, Any]] = [("", obj)]
+    while stack:
+        path, node = stack.pop()
+        if isinstance(node, float):
+            if not math.isfinite(node):
+                bad.append(path or "<root>")
+        elif isinstance(node, Mapping):
+            stack.extend((f"{path}/{k}" if path else str(k), v) for k, v in node.items())
+        elif isinstance(node, (list, tuple)):
+            stack.extend((f"{path}/{i}" if path else str(i), v) for i, v in enumerate(node))
+    return sorted(bad)
+
+
 def _validate(kind: str, obj: Any) -> None:
     _check_version(kind, obj)
+    if bad := _non_finite_paths(obj):
+        raise SchemaValidationError(kind, [f"{path}: NaN/Infinity is not allowed" for path in bad])
     try:
         errors = sorted(_validator(kind).iter_errors(obj), key=lambda e: [str(p) for p in e.absolute_path])
     except RecursionError as exc:
