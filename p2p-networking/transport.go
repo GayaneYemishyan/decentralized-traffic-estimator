@@ -17,11 +17,12 @@ const maxPayloadBytes = 65536
 type MessageHandler func(from peer.ID, data []byte)
 
 type Transport struct {
-	topic    *pubsub.Topic
-	sub      *pubsub.Subscription
-	self     peer.ID
-	mu       sync.RWMutex
-	handlers []MessageHandler
+	topic     *pubsub.Topic
+	sub       *pubsub.Subscription
+	self      peer.ID
+	mu        sync.RWMutex
+	handlers  []MessageHandler
+	closeOnce sync.Once
 }
 
 // validPayload is the only check Go does: size and well-formed JSON.
@@ -99,6 +100,8 @@ func (t *Transport) readLoop(ctx context.Context) {
 	}
 }
 func (t *Transport) Close() {
-	t.sub.Cancel()
-	t.topic.Close()
+	t.closeOnce.Do(func() {
+		t.sub.Cancel()
+		t.topic.Close()
+	})
 }

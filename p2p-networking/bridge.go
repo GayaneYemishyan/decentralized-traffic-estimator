@@ -199,7 +199,7 @@ func (b *Bridge) subscribeResp(msgs []bridgeMsg, next, dropped uint64) map[strin
 func (b *Bridge) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	topicPeers := b.tr.TopicPeers()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ready":       len(topicPeers) > 0, // at least one peer subscribed to our topic
+		"ready":       true, // bridge is serving; use topic_peers for connectivity
 		"peer_id":     b.h.ID().String(),
 		"peer_count":  len(b.h.Network().Peers()),
 		"topic_peers": len(topicPeers),

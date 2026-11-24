@@ -13,6 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 func loadOrCreateKey(path string) (crypto.PrivKey, error) {
@@ -40,7 +41,24 @@ func main() {
 	bootstrap := flag.String("bootstrap", "", "multiaddr of a bootstrap peer")
 	bridge := flag.String("bridge", "127.0.0.1:8080", "HTTP bridge bind address")
 	topic := flag.String("topic", "traffic-state", "pub/sub topic")
+	printID := flag.Bool("print-id", false, "load/create the key from -key, print the peer ID and exit")
 	flag.Parse()
+
+	if *printID {
+		if *keyPath == "" {
+			log.Fatal("-print-id requires -key")
+		}
+		priv, err := loadOrCreateKey(*keyPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		id, err := peer.IDFromPrivateKey(priv)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(id) // stdout only, so scripts can capture it
+		return
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -1,6 +1,8 @@
 *.exe
 *.test
 *.out
-*.key__pycache__/
-*.pyc
 *.key
+__pycache__/
+*.pyc
+keys/
+*/.env
