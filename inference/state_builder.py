@@ -51,16 +51,36 @@ def _parse_spatial_cell(raw: Any) -> Optional[SpatialCell]:
 def snapshot_from_metrics_dict(metrics_dict: Dict[str, Any]) -> NodeMetricsSnapshot:
     """Convert a raw metrics payload dict into a NodeMetricsSnapshot."""
     window_raw = metrics_dict.get("window") or {}
+    duration = float(
+        window_raw.get("duration_seconds", metrics_dict.get("duration_seconds", 1.0))
+    )
+
     if "start" in window_raw and "end" in window_raw:
         start_dt = _parse_dt(window_raw["start"])
         end_dt = _parse_dt(window_raw["end"])
-    else:
+    elif "interval_start" in metrics_dict and "interval_end" in metrics_dict:
+        start_dt = _parse_dt(metrics_dict["interval_start"])
+        end_dt = _parse_dt(metrics_dict["interval_end"])
+    elif "interval_end" in metrics_dict:
+        end_dt = _parse_dt(metrics_dict["interval_end"])
+        start_dt = datetime.fromtimestamp(
+            end_dt.timestamp() - max(duration, 0.0), tz=timezone.utc
+        )
+    elif "interval_start" in metrics_dict:
+        start_dt = _parse_dt(metrics_dict["interval_start"])
+        end_dt = datetime.fromtimestamp(
+            start_dt.timestamp() + max(duration, 0.0), tz=timezone.utc
+        )
+    elif "timestamp" in metrics_dict:
         ts_dt = _parse_dt(metrics_dict["timestamp"])
-        duration = float(window_raw.get("duration_seconds", 1.0))
         start_dt = datetime.fromtimestamp(
             ts_dt.timestamp() - max(duration, 0.0), tz=timezone.utc
         )
         end_dt = ts_dt
+    else:
+        raise KeyError(
+            "Metrics payload must include 'interval_start'/'interval_end', 'window', or 'timestamp'"
+        )
 
     lanes: List[LaneObservation] = []
     for item in metrics_dict.get("lanes", []):
