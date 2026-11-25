@@ -76,3 +76,10 @@ Download a sample video using:
 
 ```bash
 bash download_samples.sh "DIRECT_VIDEO_URL"
+
+### Multiple Lanes
+
+Generate metrics for three lanes:
+
+```bash
+python -m cv_module --mode synthetic --lanes 3 --interval 5

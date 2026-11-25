@@ -1,3 +1,4 @@
+import sys
 def replay_video(video_path, loop=False, target_fps=None):
     import cv2
     video = cv2.VideoCapture(video_path)
@@ -23,8 +24,8 @@ def replay_video(video_path, loop=False, target_fps=None):
 
     duration = total_frames / fps
 
-    print(f"Video FPS: {fps}")
-    print(f"Video duration: {duration:.2f} seconds")
+    print(f"Video FPS: {fps}", file=sys.stderr)
+    print(f"Video duration: {duration:.2f} seconds", file=sys.stderr)
 
     frame_count = 0
 
@@ -44,4 +45,4 @@ def replay_video(video_path, loop=False, target_fps=None):
 
     video.release()
     cv2.destroyAllWindows()
-    print(f"Total frames read: {frame_count}")
+    print(f"Total frames read: {frame_count}", file=sys.stderr)

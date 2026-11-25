@@ -24,8 +24,12 @@ def validate_metrics(payload):
             raise ValueError(
                 f"Vehicle count mismatch in {lane['lane_id']}"
             )
-    start = datetime.fromisoformat(payload["interval_start"])
-    end = datetime.fromisoformat(payload["interval_end"])
+    start = datetime.fromisoformat(
+        payload["interval_start"].replace("Z", "+00:00")
+    )
+    end = datetime.fromisoformat(
+        payload["interval_end"].replace("Z", "+00:00")
+    )
 
     if end <= start:
         raise ValueError(

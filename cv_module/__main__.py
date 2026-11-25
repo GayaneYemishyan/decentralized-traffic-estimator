@@ -67,11 +67,12 @@ def main():
         parser.error("--lanes must be between 1 and 16")
 
     seq = 0
-    interval_start = datetime.now(timezone.utc)
+    interval_start = datetime.now(timezone.utc) - timedelta(
+        seconds=args.interval
+    )
 
     try:
         while True:
-            time.sleep(args.interval)
             interval_end = interval_start + timedelta(
             seconds=args.interval
             )
@@ -105,6 +106,7 @@ def main():
 
             interval_start = interval_end
             seq += 1
+            time.sleep(args.interval)
 
 
     except KeyboardInterrupt:
