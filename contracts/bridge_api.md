@@ -45,13 +45,15 @@ Long-poll over a ring buffer of the last 1024 messages.
 - A Python restart does not reset the bridge: the first poll (cursor 0) replays up to 1024 buffered messages, and `dropped`
   may be large if the ring has wrapped. Both are harmless because of de-duplication on `message_id`.
 
+contracts/bridge_api.md: replace the /health section.
+
+markdown
 ## GET /health
 Always 200 once the HTTP server is up (it only starts after the libp2p host and pubsub exist):
 `{"ready": true, "peer_id": "12D3KooW...", "peer_count": 3, "topic_peers": 2, "boot_id": "..."}`
-- `ready` currently means "at least one peer is subscribed to the topic", so it is **false on a lone node**.
-  The client therefore does not block on it: a node must work alone and keep its ledger (offline-first).
-  Use `topic_peers` for connectivity. *(Open question for P3: keep `ready` as is, or make it mean "bridge up"?)*
-- `peer_id` is this node's own libp2p ID (see Node identity).
+- `ready` means "the bridge is up". Use `topic_peers` for connectivity. A lone node has `topic_peers: 0` and keeps working.
+- `peer_id` is this node's own libp2p ID and must never change for a node (run Go with `-key`). The Python service exits
+  with code 3 if it changes. `boot_id` changes on every bridge start by design and does not.
 
 ## GET /peers
 200 `{"peers": ["12D3KooW...", "..."]}`
