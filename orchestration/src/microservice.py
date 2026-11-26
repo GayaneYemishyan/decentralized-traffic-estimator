@@ -353,18 +353,24 @@ class Microservice:
         return TickResult(local, regional, actions, published)
 
     def _regional_and_triggers(self, metrics, local, now) -> tuple[dict[str, Any] | None, list[Action]]:
+        regional: dict[str, Any] | None
         try:
             regional = dict(self._inference.regional_state(metrics, local, self._peers.snapshot(now), now=now))
             validate_state(regional)
             if regional.get("scope") != "regional" or regional.get("node_id") != self.node_id:
                 raise ContractError("regional_state returned wrong scope or node_id")
         except Exception:
+            regional = None
             self._count("regional_error")
-            log.exception("regional estimate failed; triggers skipped for this interval")
-            return None, []
-        self._record("state", regional, self.node_id, None)
+            log.exception("regional estimate failed")
+        else:
+            self._record("state", regional, self.node_id, None)
+
+        target = local if self._triggers.config.scope == "local" else regional
+        if target is None:
+            return regional, []
         try:
-            actions = self._triggers.evaluate(regional)
+            actions = self._triggers.evaluate(target)
         except ValueError:
             self._count("trigger_error")
             log.exception("trigger evaluation failed")
@@ -505,6 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--enter-consecutive", type=int, default=2)
     p.add_argument("--exit-consecutive", type=int, default=2)
     p.add_argument("--cooldown", type=float, default=30.0)
+    p.add_argument("--trigger-scope", choices=("local", "regional"), default=env("TRIGGER_SCOPE", "regional"))
     p.add_argument("--actions-file", default=env("ACTIONS_FILE"), help="append actions as JSON lines")
     p.add_argument("--log-level", default=env("LOG_LEVEL", "INFO"))
     return p
@@ -519,7 +526,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         trigger = TriggerConfig(
             enter_score=args.enter_score, exit_score=args.exit_score, min_confidence=args.min_confidence,
             enter_consecutive=args.enter_consecutive, exit_consecutive=args.exit_consecutive,
-            cooldown_s=args.cooldown)
+            cooldown_s=args.cooldown, scope=args.trigger_scope)
         config = ServiceConfig(
             ledger_path=args.ledger, node_id=args.node_id,
             enforce_peer_identity=not args.no_peer_identity_check, startup_timeout_s=args.startup_timeout,
