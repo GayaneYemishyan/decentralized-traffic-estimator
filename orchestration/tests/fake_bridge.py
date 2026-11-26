@@ -3,7 +3,7 @@
 Mirrors its observable behaviour so the Python client is tested against the real
 wire format: JSON shapes ({"ok": true}, messages with cursor/from/data), cursors that mean
 "next cursor to read" (starting at 1, clamped), the ring buffer with ``dropped``,
-``ready`` meaning "at least one topic peer", ``validPayload`` (1..65536 bytes and valid
+``ready`` meaning "bridge up", ``validPayload`` (1..65536 bytes and valid
 JSON, else 400) and ``boot_id``. It can also inject failures the real bridge will
 produce: 5xx, dropped connections, slow replies, non-JSON replies, arbitrary JSON
 replies and restarts (new ``boot_id``, cursors back to 1).
@@ -114,7 +114,7 @@ class FakeBridge:
                 self._send(404, {"error": "not found"})
 
             def _health(self) -> None:
-                self._send(200, {"ready": len(bridge.topic_peers) > 0, "peer_id": bridge.peer_id,
+                self._send(200, {"ready": True, "peer_id": bridge.peer_id,  # "bridge up"; connectivity = topic_peers
                                  "peer_count": len(bridge.peers), "topic_peers": len(bridge.topic_peers),
                                  "boot_id": bridge.boot_id})
 
@@ -204,7 +204,7 @@ class FakeBridge:
     # ---- test controls
     @property
     def ready(self) -> bool:
-        return len(self.topic_peers) > 0
+        return True
 
     def inject(self, data: bytes, from_peer: str = "12D3KooWFakeOtherPeer00000000000000000000000000") -> int:
         """Pretend a peer sent ``data``. Returns the assigned cursor."""
