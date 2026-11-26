@@ -1,0 +1,60 @@
+name: traffic-estimator
+
+x-go: &go
+  build: ./p2p-networking
+  restart: unless-stopped
+  volumes: ["keys:/keys"]
+
+x-node-env: &node-env
+  BRIDGE_ADDR: 127.0.0.1:8080          # same network namespace as the Go container
+  LEDGER_PATH: /data/ledger.db
+  ACTIONS_FILE: /data/actions.jsonl
+  LANES: ${LANES:-4}
+  INTERVAL: ${INTERVAL:-5}
+  TRIGGER_SCOPE: ${TRIGGER_SCOPE:-regional}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-node: &node
+  build:
+    context: .
+    dockerfile: orchestration/Dockerfile
+  init: true
+  restart: on-failure                  # exit 2 (bridge late) and 3 (peer_id changed) both recover by restart
+
+services:
+  go1:
+    <<: *go
+    command: ["-key", "/keys/node1.key", "-port", "4001"]
+  go2:
+    <<: *go
+    command: ["-key", "/keys/node2.key", "-port", "4001",
+              "-bootstrap", "/dns4/go1/tcp/4001/p2p/${NODE1_ID:?run scripts/run_local_cluster.sh first}"]
+  go3:
+    <<: *go
+    command: ["-key", "/keys/node3.key", "-port", "4001",
+              "-bootstrap", "/dns4/go1/tcp/4001/p2p/${NODE1_ID:?run scripts/run_local_cluster.sh first}"]
+
+  node1:
+    <<: *node
+    network_mode: "service:go1"
+    depends_on: [go1]
+    environment: {<<: *node-env, SCENARIO: "${SCENARIO_1:-jam}"}
+    volumes: ["ledger1:/data"]
+  node2:
+    <<: *node
+    network_mode: "service:go2"
+    depends_on: [go2]
+    environment: {<<: *node-env, SCENARIO: "${SCENARIO_2:-jam}"}
+    volumes: ["ledger2:/data"]
+  node3:
+    <<: *node
+    network_mode: "service:go3"
+    depends_on: [go3]
+    environment: {<<: *node-env, SCENARIO: "${SCENARIO_3:-jam}"}
+    volumes: ["ledger3:/data"]
+
+volumes:
+  keys:
+  ledger1:
+  ledger2:
+  ledger3:
