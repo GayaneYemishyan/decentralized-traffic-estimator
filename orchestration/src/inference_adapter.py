@@ -57,17 +57,9 @@ class LilitInference:
         self._smoother = smoother or inf.TemporalSmoother()
         self._max_age_s = peer_max_age_s
 
-    @staticmethod
-    def _prepare(metrics: Mapping[str, Any]) -> dict[str, Any]:
-        # TEMPORARY SHIM: inference.snapshot_from_metrics_dict reads "window"/"timestamp"
-        # but metrics 0.2.0 carries interval_start/interval_end. Remove once P2 fixes it.
-        prepared = dict(metrics)
-        prepared["window"] = {"start": metrics["interval_start"], "end": metrics["interval_end"]}
-        return prepared
-
     def local_state(self, metrics: Mapping[str, Any]) -> dict[str, Any]:
         return dict(self._inf.process_metrics(
-            self._prepare(metrics),
+            metrics,
             smoother=self._smoother,
             scope=self._inf.Scope.LOCAL,
             schema_version=SUPPORTED_SCHEMA_VERSION,
@@ -75,7 +67,7 @@ class LilitInference:
 
     def regional_state(self, metrics, local_state, peers, *, now):
         inf = self._inf
-        snapshot = inf.snapshot_from_metrics_dict(self._prepare(metrics))
+        snapshot = inf.snapshot_from_metrics_dict(metrics)
         local_eval = inf.RuleEvaluation(
             congestion_score=local_state["congestion_score"],
             confidence=local_state["confidence"],
