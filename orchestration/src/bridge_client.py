@@ -2,11 +2,11 @@
 
 Goals: a bridge that is slow, restarting, or gone must never crash or block the
 orchestration loop. Hence:
-  * every call has a timeout;
-  * publish retries with exponential backoff + jitter;
-  * a circuit breaker makes calls fail fast while the bridge is down;
-  * :meth:`BridgeClient.listen` never raises: it backs off and keeps going;
-  * a changed ``boot_id`` (bridge restarted, cursors reset) is detected and the
+- every call has a timeout;
+- publish retries with exponential backoff + jitter;
+- a circuit breaker makes calls fail fast while the bridge is down;
+- :meth:`BridgeClient.listen` never raises: it backs off and keeps going;
+- a changed ``boot_id`` (bridge restarted, cursors reset) is detected and the
     client restarts from cursor 0 instead of silently losing messages.
 
 Stdlib only (urllib), so the edge container stays small. The client is
@@ -359,12 +359,10 @@ class BridgeClient:
 
     # ---- status
     def health(self) -> dict[str, Any]:
-        """GET /health. Keys used: peer_id, boot_id, topic_peers (int). ``ready`` is informational.
+        """GET /health. Keys used: peer_id, boot_id, ready, topic_peers (int).
 
-        The bridge only starts serving after the libp2p host and pubsub exist, so a
-        successful answer already means the node's transport is up. ``ready`` in the
-        current Go bridge additionally means "has at least one topic peer", which is
-        false on a lone node, so nothing here blocks on it.
+        ``ready`` means "the bridge is up"; connectivity is ``topic_peers``. A lone node
+        has ``topic_peers == 0`` and must still work (offline-first).
         """
         resp = self._request("GET", "/health", timeout=self._timeout)
         if not isinstance(resp.get("peer_id"), str) or not isinstance(resp.get("boot_id"), str):
@@ -399,7 +397,9 @@ class BridgeClient:
             try:
                 info = self.health()
                 topic_peers = info.get("topic_peers", 0)
-                if not require_peers or (isinstance(topic_peers, int) and topic_peers > 0):
+                if info.get("ready", True) is True and (
+                    not require_peers or (isinstance(topic_peers, int) and topic_peers > 0)
+                ):
                     return True
             except BridgeError as exc:
                 log.info("waiting for bridge: %s", exc)
