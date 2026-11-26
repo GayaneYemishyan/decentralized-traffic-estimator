@@ -380,14 +380,22 @@ def test_health_garbage(client, bridge):
         client.health()
 
 
-def test_lone_node_is_up_even_though_the_bridge_says_not_ready(bridge):
-    """The Go bridge reports ready=false until a topic peer appears. An offline-first node must still start."""
+def test_lone_node_is_up_with_zero_topic_peers(bridge):
+    """ready == "bridge up"; a node with no peers must still start (offline-first)."""
     bridge.topic_peers.clear()
     c = BridgeClient(bridge.url, backoff_base_s=0.01, backoff_cap_s=0.02)
-    assert c.health()["ready"] is False
+    h = c.health()
+    assert h["ready"] is True and h["topic_peers"] == 0
     t0 = time.monotonic()
     assert c.wait_ready(timeout_s=3)
     assert time.monotonic() - t0 < 1.0
+
+
+def test_wait_ready_waits_while_bridge_reports_not_ready(bridge):
+    c = BridgeClient(bridge.url, backoff_base_s=0.01, backoff_cap_s=0.02)
+    bridge.reply_next({"ready": False, "peer_id": "p", "boot_id": "b"}, n=2)
+    assert c.wait_ready(timeout_s=3)
+    assert bridge.request_count("/health") == 3
 
 
 def test_wait_ready_waits_for_the_bridge_to_start_answering(bridge):
