@@ -81,6 +81,13 @@ def score_lane(
     w_flow = config.flow_weight / total_w
 
     combined = w_occ * occ_clamped + w_flow * effective_flow_component
+
+    # When occupancy is elevated (>= 0.50), add a bounded build-up term so rising and
+    # sustained congestion cross the 0.70 threshold without inflating free-flow scores.
+    if occ_clamped >= 0.50:
+        buildup_boost = 0.18 * ((occ_clamped - 0.50) / 0.50) * (1.0 - 0.35 * flow_ratio)
+        combined = max(combined, min(1.0, combined + buildup_boost))
+
     # Boost jam severity when occupancy is high and flow is heavily restricted.
     if occ_clamped >= 0.75 and flow_ratio <= 0.35:
         combined = max(combined, min(1.0, occ_clamped + 0.12 * (1.0 - flow_ratio)))
