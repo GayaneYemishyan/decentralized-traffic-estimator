@@ -18,12 +18,6 @@ def main():
     )
 
     parser.add_argument(
-        "--mode",
-        choices=["synthetic", "replay"],
-        default="synthetic"
-    )
-
-    parser.add_argument(
         "--scenario",
         choices=["free", "rising", "congested", "jam"],
         default="free"
@@ -46,11 +40,76 @@ def main():
         default="node-a"
     )
 
+    parser.add_argument(
+        "--mode",
+        choices=["synthetic", "replay", "detect"],
+        default="synthetic"
+    )
+
     parser.add_argument("--video", type=str, default=None)
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--fps", type=float, default=None)
 
+    parser.add_argument(
+        "--line-y",
+        type=float,
+        default=0.6
+    )
+
+    parser.add_argument(
+        "--direction",
+        choices=["both", "positive", "negative"],
+        default="both"
+    )
+
+    parser.add_argument(
+        "--device",
+        default="cpu"
+    )
+
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=960
+    )
+
+    parser.add_argument(
+        "--show",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to traffic configuration JSON file"
+    )
+
     args = parser.parse_args()
+    if args.mode == "detect":
+        if not args.video:
+            parser.error("--video is required in detect mode")
+
+        if args.loop or args.fps is not None:
+            parser.error("--loop and --fps are for replay mode")
+
+        if args.lanes != 1:
+            parser.error("Detect mode currently uses one counting line")
+
+        from cv_module.replay import analyze_video
+
+        analyze_video(
+            video_path=args.video,
+            interval=args.interval,
+            line_y=args.line_y,
+            direction=args.direction,
+            device=args.device,
+            image_size=args.imgsz,
+            show=args.show,
+            config_path=args.config
+        )
+        return
+    
     if args.mode == "replay":
         if not args.video:
             parser.error("--video is required in replay mode")
