@@ -1,4 +1,10 @@
 services:
+  node3:
+    build: .
+    command: ["-key", "/keys/node3.key", "-port", "4001", "-bridge", "0.0.0.0:8080",
+              "-bootstrap", "/dns4/node1/tcp/4001/p2p/${NODE1_ID}"]
+    volumes: ["./keys:/keys"]
+    ports: ["127.0.0.1:8082:8080"]
   node2:                     
     build: .
     command: ["-key", "/keys/node2.key", "-port", "4001", "-bridge", "0.0.0.0:8080",

@@ -10,7 +10,7 @@ Single node:
 go run . -key keys/node1.key -bridge 127.0.0.1:8080
 ```
 
-Local 2-node cluster (Docker): `./run_local_cluster.sh` (bash) or `powershell -ExecutionPolicy Bypass -File .\run_local_cluster.ps1` (Windows). Bridges are exposed on `127.0.0.1:8080` (node1) and `127.0.0.1:8081` (node2).
+Local 3-node cluster (Docker): `./run_local_cluster.sh` (bash) or `powershell -ExecutionPolicy Bypass -File .\run_local_cluster.ps1` (Windows). Bridges are exposed on `127.0.0.1:8080` (node1), `127.0.0.1:8081` (node2) and `127.0.0.1:8082` (node3).
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -21,7 +21,8 @@ Local 2-node cluster (Docker): `./run_local_cluster.sh` (bash) or `powershell -E
 | `-topic` | `traffic-state` | pub/sub topic |
 | `-print-id` | false | print the peer ID for `-key` and exit |
 
-Peers on the same machine find each other via mDNS; in Docker use `-bootstrap`.
+Peers on the same machine find each other via mDNS; in Docker use `-bootstrap`. 
+In Docker, node2 and node3 bootstrap only to node1 (star topology). Messages between them are relayed through node1, so if node1 is down they are isolated until it returns, because mDNS does not work inside Docker networks.
 
 ## Message rules
 
@@ -94,6 +95,21 @@ Cursor semantics:
 ```
 
 All connected libp2p peers.
+
+## curl examples
+
+```bash
+# publish on node1
+B64=$(printf '%s' '{"node":"n1","congestion":0.7}' | base64 | tr -d '\n')
+curl -s -X POST http://127.0.0.1:8080/publish -d "{\"data\":\"$B64\"}"
+
+# receive on node2 (long-poll, up to 5 s)
+curl -s "http://127.0.0.1:8081/subscribe?cursor=1&timeout_ms=5000"
+
+# health and peers
+curl -s http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:8080/peers
+```
 
 ## Python client
 
