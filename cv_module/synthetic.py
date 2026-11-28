@@ -13,7 +13,7 @@ def generate_synthetic_metrics(scenario="free", interval=1.0, step=0):
     elif scenario == "rising":
         progress = min(step / 10, 1.0)
         flow_rate = 600 + 600 * progress
-        occupancy = 0.25 + 0.45 * progress
+        occupancy = 0.25 + 0.55 * progress
 
     elif scenario == "congested":
         flow_rate = random.randint(400, 900)
