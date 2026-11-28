@@ -60,6 +60,10 @@ class ServiceConfig:
     max_future_skew_s: float = 30.0
     max_peers: int = 1024
     seen_cache_size: int = 4096
+    peer_rate_per_s: float = 2.0            # sustained messages/s accepted from one peer (0 = off)
+    peer_burst: int = 1024
+    global_rate_per_s: float = 100.0        # sustained messages/s from all peers together
+    global_burst: int = 1024
     health_interval_s: float = 30.0
     stats_interval_s: float = 60.0
     trigger: TriggerConfig = field(default_factory=TriggerConfig)
@@ -71,6 +75,8 @@ class ServiceConfig:
                 raise ValueError(f"{name} must be > 0")
         if self.max_peers < 1 or self.seen_cache_size < 1 or not 0 <= self.poll_timeout_ms <= 30000:
             raise ValueError("max_peers/seen_cache_size >= 1 and 0 <= poll_timeout_ms <= 30000 required")
+        if min(self.peer_rate_per_s, self.global_rate_per_s) < 0 or self.peer_burst < 1 or self.global_burst < 1:
+            raise ValueError("rates must be >= 0 (0 disables) and bursts >= 1")
 
 
 @dataclass(frozen=True)
@@ -171,6 +177,34 @@ class _Throttle:
             return False
 
 
+class _RateLimiter:
+    """Token bucket per key (LRU-bounded key set). rate <= 0 disables the limit."""
+
+    def __init__(self, rate_per_s: float, burst: int, *, max_keys: int = 4096,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self._rate, self._burst, self._max, self._clock = rate_per_s, float(burst), max_keys, clock
+        self._lock = threading.Lock()
+        self._b: collections.OrderedDict[str, tuple[float, float]] = collections.OrderedDict()
+
+    def allow(self, key: str) -> bool:
+        if self._rate <= 0:
+            return True
+        now = self._clock()
+        with self._lock:
+            tokens, last = self._b.get(key, (self._burst, now))
+            tokens = min(self._burst, tokens + (now - last) * self._rate)
+            ok = tokens >= 1.0
+            self._b[key] = (tokens - 1.0 if ok else tokens, now)
+            self._b.move_to_end(key)
+            while len(self._b) > self._max:
+                self._b.popitem(last=False)
+            return ok
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._b)
+
+
 _EOF = object()
 
 
@@ -228,6 +262,8 @@ class Microservice:
         self._peers = PeerTable(config.max_peers, config.peer_max_age_s)
         self._seen = _SeenCache(config.seen_cache_size)
         self._throttle = _Throttle()
+        self._peer_limit = _RateLimiter(config.peer_rate_per_s, config.peer_burst)
+        self._global_limit = _RateLimiter(config.global_rate_per_s, config.global_burst, max_keys=1)
         self._stats: collections.Counter[str] = collections.Counter()
         self._stats_lock = threading.Lock()
         self._warned_node_id = False
@@ -385,11 +421,16 @@ class Microservice:
 
     # ---- peer pipeline (runs in the bridge listener thread)
     def handle_peer_message(self, msg: BridgeMessage) -> str:
-        """Outcome: accepted | stale | duplicate | rejected | non_local | self."""
+        """Outcome: accepted | stale | duplicate | rejected | non_local | rate_limited | self."""
         if self.node_id is None:
             raise ServiceError("resolve_identity() must be called first")
         cfg = self._cfg
         now = self._clock()
+        if not (self._peer_limit.allow(msg.from_peer) and self._global_limit.allow("*")):
+            self._count("peer_rate_limited")
+            if self._throttle.allow(f"rate:{msg.from_peer}"):
+                log.warning("rate limiting %s", msg.from_peer)
+            return "rate_limited"
         try:
             env = parse_envelope(msg.data, now=now, max_future_skew_s=cfg.max_future_skew_s)
             if cfg.enforce_peer_identity:
@@ -505,6 +546,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--startup-timeout", type=float, default=30.0)
     p.add_argument("--peer-max-age", type=float, default=30.0)
     p.add_argument("--max-future-skew", type=float, default=30.0)
+    p.add_argument("--peer-rate", type=float, default=2.0)
+    p.add_argument("--global-rate", type=float, default=100.0)
     p.add_argument("--enter-score", type=float, default=0.80)
     p.add_argument("--exit-score", type=float, default=0.70)
     p.add_argument("--min-confidence", type=float, default=0.65)
@@ -530,7 +573,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = ServiceConfig(
             ledger_path=args.ledger, node_id=args.node_id,
             enforce_peer_identity=not args.no_peer_identity_check, startup_timeout_s=args.startup_timeout,
-            peer_max_age_s=args.peer_max_age, max_future_skew_s=args.max_future_skew, trigger=trigger)
+            peer_max_age_s=args.peer_max_age, max_future_skew_s=args.max_future_skew_s,
+            peer_rate_per_s=args.peer_rate, global_rate_per_s=args.global_rate, trigger=trigger)
     except ValueError as exc:
         parser.error(str(exc))
     try:
