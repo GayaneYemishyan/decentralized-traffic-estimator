@@ -89,16 +89,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	go func() { <-ctx.Done(); tr.Close() }()
 
+	if _, err := StartBridge(ctx, h, tr, *bridge); err != nil {
+		log.Fatal(err)
+	}
 	if err := StartDiscovery(ctx, h, *bootstrap); err != nil {
 		log.Fatal(err)
 	}
 
-	go func() { <-ctx.Done(); tr.Close() }()
-	if _, err := StartBridge(ctx, h, tr, *bridge); err != nil {
-		log.Fatal(err)
-	}
-
 	<-ctx.Done()
-	tr.Close()
 }

@@ -84,12 +84,14 @@ class BridgeClient:
         return self._get_json("/peers", timeout=5)
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self._thread and self._thread.is_alive() and not self._stop.is_set():
             return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._poll_loop, name="bridge-poll", daemon=True)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._poll_loop, args=(self._stop,), name="bridge-poll", daemon=True
+        )
         self._thread.start()
-
+        
     def stop(self) -> None:
         self._stop.set()
         if self._thread:
@@ -98,14 +100,17 @@ class BridgeClient:
     # ---- internals -----------------------------------------------------
 
     def _get_json(self, path: str, timeout: float) -> dict:
-        with urllib.request.urlopen(f"{self.base_url}{path}", timeout=timeout) as r:
-            return json.load(r)
+        try:
+            with urllib.request.urlopen(f"{self.base_url}{path}", timeout=timeout) as r:
+                return json.load(r)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise BridgeError(f"GET {path} failed: {e}") from e
 
-    def _poll_loop(self) -> None:
+    def _poll_loop(self, stop: threading.Event) -> None:
         cursor = 1
         boot_id: Optional[str] = None
         backoff = 0.5
-        while not self._stop.is_set():
+        while not stop.is_set():
             qs = urllib.parse.urlencode(
                 {"cursor": cursor, "max": self.max_batch, "timeout_ms": self.poll_timeout_ms}
             )
@@ -113,7 +118,7 @@ class BridgeClient:
                 resp = self._get_json(f"/subscribe?{qs}", timeout=self.poll_timeout_ms / 1000 + 5)
             except Exception as e:  # bridge down/restarting, socket timeout, bad JSON
                 log.warning("subscribe failed (retry in %.1fs): %s", backoff, e)
-                if self._stop.wait(backoff):
+                if stop.wait(backoff):
                     return
                 backoff = min(backoff * 2, 10)
                 continue

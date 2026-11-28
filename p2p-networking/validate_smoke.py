@@ -8,9 +8,18 @@ def send(body, method="POST"):
         return x.code
 
 b64 = lambda b: base64.b64encode(b).decode()
-print("bad base64      :", send(json.dumps({"data": "!!!"}).encode()), "expect 400")
-print("not json        :", send(json.dumps({"data": b64(b"not json")}).encode()), "expect 400")
-print("empty data      :", send(json.dumps({"data": ""}).encode()), "expect 400")
-print("bad body        :", send(b"garbage"), "expect 400")
-print("GET             :", send(None, "GET"), "expect 405")
-print("valid           :", send(json.dumps({"data": b64(b'{"ok":1}')}).encode()), "expect 200")
+fails = 0
+
+def check(name, got, want):
+    global fails
+    ok = got == want
+    fails += not ok
+    print(f"{name:16}: {got} {'ok' if ok else f'FAIL (want {want})'}")
+
+check("bad base64", send(json.dumps({"data": "!!!"}).encode()), 400)
+check("not json", send(json.dumps({"data": b64(b"not json")}).encode()), 400)
+check("empty data", send(json.dumps({"data": ""}).encode()), 400)
+check("bad body", send(b"garbage"), 400)
+check("GET", send(None, "GET"), 405)
+check("valid", send(json.dumps({"data": b64(b'{"ok":1}')}).encode()), 200)
+raise SystemExit(1 if fails else 0)

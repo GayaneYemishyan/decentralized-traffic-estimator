@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,15 +27,21 @@ func newTestBridge() *Bridge {
 	return &Bridge{bootID: "test-boot", notify: make(chan struct{})}
 }
 
-func subscribe(t *testing.T, b *Bridge, query string) subResp {
-	t.Helper()
+func doSubscribe(b *Bridge, query string) (subResp, error) {
+	var r subResp
 	rec := httptest.NewRecorder()
 	b.handleSubscribe(rec, httptest.NewRequest(http.MethodGet, "/subscribe?"+query, nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		return r, fmt.Errorf("status %d: %s", rec.Code, rec.Body.String())
 	}
-	var r subResp
-	if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil {
+	err := json.Unmarshal(rec.Body.Bytes(), &r)
+	return r, err
+}
+
+func subscribe(t *testing.T, b *Bridge, query string) subResp {
+	t.Helper()
+	r, err := doSubscribe(b, query)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return r
@@ -89,16 +97,26 @@ func TestSubscribeTimeoutWhenEmpty(t *testing.T) {
 
 func TestSubscribeLongPollWakesOnPush(t *testing.T) {
 	b := newTestBridge()
-	done := make(chan subResp, 1)
-	go func() { done <- subscribe(t, b, "cursor=1&timeout_ms=5000") }()
+	type result struct {
+		r   subResp
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r, err := doSubscribe(b, "cursor=1&timeout_ms=5000")
+		done <- result{r, err}
+	}()
 
 	time.Sleep(100 * time.Millisecond)
 	pushN(b, 1)
 
 	select {
-	case r := <-done:
-		if len(r.Messages) != 1 || r.Messages[0].Cursor != 1 {
-			t.Fatalf("got %+v", r.Messages)
+	case res := <-done:
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		if len(res.r.Messages) != 1 || res.r.Messages[0].Cursor != 1 {
+			t.Fatalf("got %+v", res.r.Messages)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("long-poll did not wake on push")
@@ -125,7 +143,7 @@ func TestPublishValidation(t *testing.T) {
 		{"empty data", http.MethodPost, wrap(""), http.StatusBadRequest},
 		{"garbage body", http.MethodPost, []byte("garbage"), http.StatusBadRequest},
 		{"oversize payload", http.MethodPost, wrap(b64(jsonOfSize(maxPayloadBytes + 1))), http.StatusBadRequest},
-		{"oversize body", http.MethodPost, bytes.Repeat([]byte("a"), maxPublishBody+1), http.StatusBadRequest},
+		{"oversize body", http.MethodPost, wrap(strings.Repeat("a", maxPublishBody)), http.StatusBadRequest},
 		{"GET not allowed", http.MethodGet, nil, http.StatusMethodNotAllowed},
 		{"valid", http.MethodPost, wrap(b64([]byte(`{"ok":1}`))), http.StatusOK},
 	}

@@ -84,13 +84,10 @@ func StartBridge(ctx context.Context, h host.Host, tr *Transport, addr string) (
 
 // push is called inline from Transport.readLoop: it must never block.
 func (b *Bridge) push(from peer.ID, data []byte) {
+	enc := base64.StdEncoding.EncodeToString(data)
 	b.mu.Lock()
 	b.last++
-	b.ring[(b.last-1)%ringSize] = bridgeMsg{
-		Cursor: b.last,
-		From:   from.String(),
-		Data:   base64.StdEncoding.EncodeToString(data),
-	}
+	b.ring[(b.last-1)%ringSize] = bridgeMsg{Cursor: b.last, From: from.String(), Data: enc}
 	close(b.notify)
 	b.notify = make(chan struct{})
 	b.mu.Unlock()
@@ -141,9 +138,9 @@ func (b *Bridge) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if cursor < 1 {
 		cursor = 1
 	}
-	max := defaultPollMax
+	limit := defaultPollMax
 	if v, err := strconv.Atoi(q.Get("max")); err == nil && v > 0 {
-		max = min(v, ringSize)
+		limit = min(v, ringSize)
 	}
 	wait := defaultPollWait
 	if v, err := strconv.Atoi(q.Get("timeout_ms")); err == nil && v >= 0 {
@@ -164,8 +161,8 @@ func (b *Bridge) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			cursor = oldest
 		}
 		if cursor <= b.last {
-			msgs := make([]bridgeMsg, 0, max)
-			for c := cursor; c <= b.last && len(msgs) < max; c++ {
+			msgs := make([]bridgeMsg, 0, limit)
+			for c := cursor; c <= b.last && len(msgs) < limit; c++ {
 				msgs = append(msgs, b.ring[(c-1)%ringSize])
 			}
 			next := cursor + uint64(len(msgs))
@@ -199,7 +196,6 @@ func (b *Bridge) subscribeResp(msgs []bridgeMsg, next, dropped uint64) map[strin
 func (b *Bridge) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	topicPeers := b.tr.TopicPeers()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ready":       true, // bridge is serving; use topic_peers for connectivity
 		"peer_id":     b.h.ID().String(),
 		"peer_count":  len(b.h.Network().Peers()),
 		"topic_peers": len(topicPeers),

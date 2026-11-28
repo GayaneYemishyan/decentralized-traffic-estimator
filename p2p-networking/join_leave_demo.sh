@@ -37,10 +37,10 @@ echo "started: node1 topic_peers=$(topic_peers "$NODE1")"
 
 # Messages must flow again after the rejoin (node2's bridge restarted, so its ring is empty).
 # node3 was never stopped, so it checks that the survivors were unaffected.
-B64=$(printf '%s' '{"demo":"rejoin"}' | base64 | tr -d '\n')
+B64=$(printf '{"demo":"rejoin","t":%s}' "$(date +%s%N)" | base64 | tr -d '\n')
 curl -sf -X POST "$NODE1/publish" -d "{\"data\":\"$B64\"}" >/dev/null
 for N in "$NODE2" "$NODE3"; do 
-  if curl -sf "$N/subscribe?cursor=1&timeout_ms=5000" | grep -q "$B64"; then
+  if curl -sf "$N/subscribe?cursor=1&max=1024&timeout_ms=5000" | grep -qF "$B64"; then
     echo "message after rejoin: received on $N"
   else
     echo "FAIL: $N did not receive the message after rejoining"

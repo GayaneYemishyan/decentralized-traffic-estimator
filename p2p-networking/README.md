@@ -22,7 +22,7 @@ Local 3-node cluster (Docker): `./run_local_cluster.sh` (bash) or `powershell -E
 | `-print-id` | false | print the peer ID for `-key` and exit |
 
 Peers on the same machine find each other via mDNS; in Docker use `-bootstrap`. 
-In Docker, node2 and node3 bootstrap only to node1 (star topology). Messages between them are relayed through node1, so if node1 is down they are isolated until it returns, because mDNS does not work inside Docker networks.
+In Docker, node2 and node3 bootstrap only to node1. mDNS may also connect them directly, but don't rely on it. If node1 is down, they may be isolated until it returns.
 
 ## Message rules
 
@@ -83,10 +83,10 @@ Cursor semantics:
 ### `GET /health`
 
 ```json
-{"ready": true, "peer_id": "12D3KooW...", "peer_count": 1, "topic_peers": 1, "boot_id": "..."}
+{"peer_id": "12D3KooW...", "peer_count": 1, "topic_peers": 1, "boot_id": "..."}
 ```
 
-`ready` only means the bridge is serving. Use `topic_peers` (peers subscribed to our topic) to know whether broadcasts can reach anyone.
+Use `topic_peers` (peers subscribed to our topic) to know whether broadcasts can reach anyone.
 
 ### `GET /peers`
 
@@ -141,6 +141,6 @@ Smoke scripts that need the running cluster: `bridge_smoke.py` (oversize rejecti
 Peer joins and leaves are logged (`peer joined: <id>` / `peer left: <id>`). A bootstrapped node re-dials its bootstrap peer automatically after a disconnect. To observe it:
 
 ```
-docker compose stop node2     # topic_peers on node1 -> 0
-docker compose start node2    # topic_peers on node1 -> 1
+docker compose stop node2     # topic_peers on node1: 2 -> 1
+docker compose start node2    # topic_peers on node1: 1 -> 2
 ```

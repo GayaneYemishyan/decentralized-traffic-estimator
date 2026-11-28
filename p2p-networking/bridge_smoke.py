@@ -11,9 +11,12 @@ def post(port, raw: bytes):
 def get(port, path):
     return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}{path}"))
 
-print("oversize:", post(8080, b'"' + b"a" * 70000 + b'"'))   # expect 400
+assert post(8080, b'"' + b"a" * 70000 + b'"') == 400, "oversize should be 400"
 
 for i in range(1100):
     post(8080, json.dumps({"i": i}).encode())
 r = get(8081, "/subscribe?cursor=1&max=1&timeout_ms=1000")
 print("dropped:", r["dropped"], "first cursor:", r["messages"][0]["cursor"])
+assert r["dropped"] > 0, "expected ring overflow"
+assert r["messages"][0]["cursor"] == r["dropped"] + 1, "first cursor should follow the gap"
+print("PASS")
