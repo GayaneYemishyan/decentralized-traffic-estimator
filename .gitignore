@@ -1,0 +1,11 @@
+*.exe
+*.test
+*.out
+*.key
+__pycache__/
+*.pyc
+keys/
+*/.env
+.pytest_cache/
+.env
+*.pyc
