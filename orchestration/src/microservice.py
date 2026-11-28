@@ -511,7 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--enter-consecutive", type=int, default=2)
     p.add_argument("--exit-consecutive", type=int, default=2)
     p.add_argument("--cooldown", type=float, default=30.0)
-    p.add_argument("--trigger-scope", choices=("local", "regional"), default=env("TRIGGER_SCOPE", "regional"))
+    p.add_argument("--trigger-scope", choices=("local", "regional"), default=env("TRIGGER_SCOPE", "local"))
     p.add_argument("--actions-file", default=env("ACTIONS_FILE"), help="append actions as JSON lines")
     p.add_argument("--log-level", default=env("LOG_LEVEL", "INFO"))
     return p

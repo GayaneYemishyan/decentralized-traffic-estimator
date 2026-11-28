@@ -55,15 +55,19 @@ def run_scenario(scenario: str, seed: int) -> tuple[list[Step | None], bool, lis
     from src.ledger import Ledger
     from src.microservice import Microservice, ServiceConfig
     from src.serializer import utc_now_iso
+    from src.triggers import TriggerConfig
 
     random.seed(seed)
     t0 = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
     now = [t0]
     steps: list[Step | None] = []
     with tempfile.TemporaryDirectory() as tmp, Ledger(Path(tmp) / "it.db") as ledger:
-        svc = Microservice(ServiceConfig(ledger_path=str(Path(tmp) / "it.db"), node_id="node-it"),
-                           bridge=None, ledger=ledger, inference=LilitInference(),
-                           clock=lambda: now[0], handlers=[])
+        svc = Microservice(
+            ServiceConfig(ledger_path=str(Path(tmp) / "it.db"), node_id="node-it",
+                          trigger=TriggerConfig(scope="local")),
+            bridge=None, ledger=ledger, inference=LilitInference(),
+            clock=lambda: now[0], handlers=[],
+        )
         svc.resolve_identity()
         for seq in range(STEPS):
             start = t0 + timedelta(seconds=seq * INTERVAL_S)
