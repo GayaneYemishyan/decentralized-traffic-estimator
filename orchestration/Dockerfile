@@ -12,6 +12,7 @@ COPY contracts ./contracts
 COPY inference ./inference
 COPY cv_module ./cv_module
 COPY orchestration ./orchestration
+COPY scripts ./scripts
 
 RUN useradd --system --uid 10001 app && mkdir /data && chown app /data \
     && chmod +x /app/orchestration/entrypoint.sh
